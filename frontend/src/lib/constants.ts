@@ -1,0 +1,1 @@
+export const PAPER_STARTING_BALANCE_USD = 10_000;

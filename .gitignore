@@ -1,0 +1,22 @@
+# secrets
+backend/.env
+.env
+.env.*
+
+# python
+backend/.venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# node / next
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+node_modules/
+
+# misc
+.DS_Store
+*.log
+.cursor/
