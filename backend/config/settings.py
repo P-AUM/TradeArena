@@ -139,55 +139,27 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-# --- Email (password reset OTP) ---
+# --- Email (password reset OTP) — SMTP only ---
 PAPER_STARTING_BALANCE = os.getenv("PAPER_STARTING_BALANCE", "10000.00")
 
 DEFAULT_FROM_EMAIL = os.getenv(
     "DEFAULT_FROM_EMAIL", "TradeArena <noreply@localhost>"
-)
-
-# Microsoft Graph (Outlook / Microsoft 365) — preferred
-# Personal Outlook: GRAPH_TENANT_ID=consumers + graph_oauth_setup
-# Work M365 app-only: tenant GUID + client secret + GRAPH_SENDER_EMAIL
-GRAPH_TENANT_ID = os.getenv("GRAPH_TENANT_ID", "consumers").strip()
-GRAPH_CLIENT_ID = os.getenv("GRAPH_CLIENT_ID", "").strip()
-GRAPH_CLIENT_SECRET = os.getenv("GRAPH_CLIENT_SECRET", "").strip()
-GRAPH_REFRESH_TOKEN = os.getenv("GRAPH_REFRESH_TOKEN", "").strip()
-GRAPH_SENDER_EMAIL = os.getenv("GRAPH_SENDER_EMAIL", "").strip()
-
-# Resend (optional)
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
-RESEND_FROM_EMAIL = os.getenv(
-    "RESEND_FROM_EMAIL", "TradeArena <onboarding@resend.dev>"
 ).strip()
-
-# Gmail API (optional)
-GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID", "").strip()
-GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET", "").strip()
-GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN", "").strip()
-GMAIL_SENDER = os.getenv("GMAIL_SENDER", "").strip() or DEFAULT_FROM_EMAIL
-
-_graph_ready = bool(
-    GRAPH_CLIENT_ID
-    and (
-        GRAPH_REFRESH_TOKEN
-        or (GRAPH_TENANT_ID and GRAPH_CLIENT_SECRET and GRAPH_SENDER_EMAIL)
-    )
-)
-_resend_ready = bool(RESEND_API_KEY)
-_gmail_ready = bool(GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN)
-EMAIL_SHOW_DEV_OTP = os.getenv(
-    "EMAIL_SHOW_DEV_OTP",
-    "false" if (_graph_ready or _resend_ready or _gmail_ready) else "true",
-).lower() in ("1", "true", "yes")
+# Used by Django error mail; keep in sync so nothing falls back to EMAIL_HOST_USER
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
 
 EMAIL_HOST = os.getenv("EMAIL_HOST", "").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "").strip()
+_smtp_ready = bool(EMAIL_HOST and EMAIL_HOST_PASSWORD and not EMAIL_HOST_PASSWORD.startswith("PASTE_"))
+EMAIL_SHOW_DEV_OTP = os.getenv(
+    "EMAIL_SHOW_DEV_OTP",
+    "false" if _smtp_ready else "true",
+).lower() in ("1", "true", "yes")
+
 if EMAIL_HOST:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-    EMAIL_HOST = EMAIL_HOST
     EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
     EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
     EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
     EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() == "true"
 else:

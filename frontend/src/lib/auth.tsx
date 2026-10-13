@@ -14,7 +14,9 @@ import {
   apiMe,
   apiSignup,
   clearTokens,
+  ensureFreshAccessToken,
   getAccessToken,
+  getRefreshToken,
   setTokens,
   type AuthUser,
   type Role,
@@ -74,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
     (async () => {
-      if (!getAccessToken()) {
+      if (!getAccessToken() && !getRefreshToken()) {
         writeCachedUser(null);
         if (!cancelled) {
           setUser(null);
@@ -83,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       try {
+        await ensureFreshAccessToken();
         const me = await apiMe();
         if (!cancelled) {
           setUser(me);
@@ -131,6 +134,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     writeCachedUser(null);
     setUser(null);
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const id = window.setInterval(() => {
+      void ensureFreshAccessToken();
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, [user]);
 
   const value = useMemo(
     () => ({

@@ -215,11 +215,16 @@ export function TraderHistoryHeader({
             }
             style={{ fontFamily: "var(--font-display)" }}
           >
-            {followPending
-              ? "…"
-              : isFollowing
-                ? "Following"
-                : "Follow"}
+            {followPending ? (
+              <span className="inline-flex items-center gap-2">
+                <span className="btn-spinner" aria-hidden="true" />
+                {isFollowing ? "Updating…" : "Following…"}
+              </span>
+            ) : isFollowing ? (
+              "Following"
+            ) : (
+              "Follow"
+            )}
           </button>
         ) : null}
         <Link

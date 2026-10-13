@@ -6,7 +6,11 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .email_reset import create_reset_code, send_reset_code_email
+from .email_reset import (
+    create_reset_code,
+    send_reset_code_email_async,
+    smtp_configured,
+)
 from .models import Follow, PasswordResetCode
 from .serializers import (
     ForgotPasswordSerializer,
@@ -242,47 +246,44 @@ class ForgotPasswordView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].strip().lower()
 
-        generic = {
-            "detail": "If that email is registered, a verification code has been sent."
-        }
-
         try:
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
-            return Response(generic, status=status.HTTP_200_OK)
+            return Response(
+                {"detail": "Email not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         reset = create_reset_code(user)
-        email_ok = True
-        try:
-            send_reset_code_email(user, reset.code)
-        except Exception as exc:
-            email_ok = False
-            if not settings.DEBUG:
-                return Response(
-                    {
-                        "detail": (
-                            "Could not send email. Configure Microsoft Graph "
-                            "(GRAPH_CLIENT_ID + run: python manage.py graph_oauth_setup) "
-                            f"or RESEND_API_KEY / SMTP. ({exc})"
-                        )
-                    },
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                )
+        configured = smtp_configured()
+        if not configured and not settings.DEBUG:
+            return Response(
+                {
+                    "detail": (
+                        "Could not send email. Set EMAIL_HOST, EMAIL_HOST_USER, "
+                        "and EMAIL_HOST_PASSWORD in backend/.env"
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
-        payload = dict(generic)
-        # Only expose OTP on screen when mail failed, or EMAIL_SHOW_DEV_OTP=true
+        if configured:
+            send_reset_code_email_async(user, reset.code)
+
+        payload = {
+            "detail": "A verification code has been sent to your email.",
+        }
+        # Show OTP on screen in DEBUG when mail is not configured, or EMAIL_SHOW_DEV_OTP=true
         show_dev = settings.DEBUG and (
-            not email_ok or getattr(settings, "EMAIL_SHOW_DEV_OTP", False)
+            not configured or getattr(settings, "EMAIL_SHOW_DEV_OTP", False)
         )
         if show_dev:
             payload["dev_code"] = reset.code
             payload["detail"] = (
                 "Temporary: use the code shown on screen."
-                if not email_ok
+                if not configured
                 else "Code sent. Temporary: also shown on screen."
             )
-        elif email_ok:
-            payload["detail"] = "If that email is registered, a verification code has been sent."
         return Response(payload, status=status.HTTP_200_OK)
 
 

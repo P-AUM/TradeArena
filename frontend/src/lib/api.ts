@@ -40,6 +40,91 @@ export function clearTokens() {
   localStorage.removeItem(REFRESH_KEY);
 }
 
+const REFRESH_SKEW_MS = 60_000;
+let refreshInFlight: Promise<string> | null = null;
+
+function jwtExpMs(token: string): number | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const json = JSON.parse(atob(padded)) as { exp?: number };
+    return typeof json.exp === "number" ? json.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function accessIsExpiring(token: string | null): boolean {
+  if (!token) return true;
+  const exp = jwtExpMs(token);
+  if (exp == null) return false;
+  return exp - Date.now() <= REFRESH_SKEW_MS;
+}
+
+async function postRefresh(): Promise<string> {
+  const refresh = getRefreshToken();
+  if (!refresh) throw new Error("Not authenticated");
+  const res = await fetch(`${API_BASE}/auth/token/refresh/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh }),
+  });
+  if (!res.ok) {
+    clearTokens();
+    throw new Error(await parseError(res));
+  }
+  const data = (await res.json()) as { access: string; refresh?: string };
+  localStorage.setItem(ACCESS_KEY, data.access);
+  if (data.refresh) localStorage.setItem(REFRESH_KEY, data.refresh);
+  return data.access;
+}
+
+function refreshAccessToken(): Promise<string> {
+  if (!refreshInFlight) {
+    refreshInFlight = postRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+/** Refresh the access JWT if it is missing or within 60s of expiry. */
+export async function ensureFreshAccessToken(): Promise<string | null> {
+  const access = getAccessToken();
+  const refresh = getRefreshToken();
+  if (!access && !refresh) return null;
+  if (!accessIsExpiring(access)) return access;
+  if (!refresh) return access;
+  try {
+    return await refreshAccessToken();
+  } catch {
+    return null;
+  }
+}
+
+async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const token = await ensureFreshAccessToken();
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let res = await fetch(url, { ...init, headers });
+  if (res.status !== 401 || !getRefreshToken()) return res;
+
+  try {
+    const next = await refreshAccessToken();
+    headers.set("Authorization", `Bearer ${next}`);
+    res = await fetch(url, { ...init, headers });
+  } catch {
+    /* keep the original 401 */
+  }
+  return res;
+}
+
 async function parseError(res: Response): Promise<string> {
   try {
     const data = await res.json();
@@ -90,11 +175,10 @@ export async function apiLogin(input: {
 }
 
 export async function apiMe(): Promise<AuthUser> {
-  const token = getAccessToken();
-  if (!token) throw new Error("Not authenticated");
-  const res = await fetch(`${API_BASE}/auth/me/`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  if (!getAccessToken() && !getRefreshToken()) {
+    throw new Error("Not authenticated");
+  }
+  const res = await authFetch(`${API_BASE}/auth/me/`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
@@ -217,26 +301,15 @@ export type Ticker = {
   ws: { url: string; stream: string };
 };
 
-function authHeaders(): HeadersInit {
-  const token = getAccessToken();
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 export async function apiWallets(): Promise<Wallet[]> {
-  const res = await fetch(`${API_BASE}/trading/wallets/`, {
-    headers: authHeaders(),
-  });
+  const res = await authFetch(`${API_BASE}/trading/wallets/`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
 export async function apiQuotes(market?: string): Promise<Quote[]> {
   const q = market ? `?market=${market}` : "";
-  const res = await fetch(`${API_BASE}/trading/quotes/${q}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/trading/quotes/${q}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -246,9 +319,9 @@ export async function apiSearchSymbols(
   market: "spot" | "futures",
   q: string
 ): Promise<SymbolHit[]> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/trading/symbols/?market=${market}&q=${encodeURIComponent(q)}&limit=40`,
-    { headers: authHeaders() }
+    {}
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -258,9 +331,9 @@ export async function apiOrderBook(
   market: "spot" | "futures",
   symbol: string
 ): Promise<OrderBook> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/trading/orderbook/?market=${market}&symbol=${encodeURIComponent(symbol)}&limit=20`,
-    { headers: authHeaders() }
+    {}
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -270,9 +343,9 @@ export async function apiRecentTrades(
   market: "spot" | "futures",
   symbol: string
 ): Promise<{ trades: RecentTrade[]; ws: { url: string; stream: string } }> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/trading/trades/?market=${market}&symbol=${encodeURIComponent(symbol)}&limit=40`,
-    { headers: authHeaders() }
+    {}
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -282,9 +355,9 @@ export async function apiTicker(
   market: "spot" | "futures",
   symbol: string
 ): Promise<Ticker> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/trading/ticker/?market=${market}&symbol=${encodeURIComponent(symbol)}`,
-    { headers: authHeaders() }
+    {}
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -294,8 +367,7 @@ export async function apiPositions(
   status: "open" | "closed" | "all" = "open"
 ): Promise<Position[]> {
   const q = status === "all" ? "" : `?status=${status}`;
-  const res = await fetch(`${API_BASE}/trading/positions/${q}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/trading/positions/${q}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -307,9 +379,8 @@ export async function apiOpenPosition(input: {
   side: "long" | "short";
   notional: number;
 }): Promise<Position> {
-  const res = await fetch(`${API_BASE}/trading/positions/`, {
+  const res = await authFetch(`${API_BASE}/trading/positions/`, {
     method: "POST",
-    headers: authHeaders(),
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await parseError(res));
@@ -348,9 +419,8 @@ export async function apiPlaceOrder(input: {
   stop_loss?: number | null;
   take_profit?: number | null;
 }): Promise<PaperOrder> {
-  const res = await fetch(`${API_BASE}/trading/orders/`, {
+  const res = await authFetch(`${API_BASE}/trading/orders/`, {
     method: "POST",
-    headers: authHeaders(),
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await parseError(res));
@@ -361,26 +431,23 @@ export async function apiOrders(
   status: "open" | "filled" | "cancelled" | "all" = "open"
 ): Promise<PaperOrder[]> {
   const q = status === "all" ? "" : `?status=${status}`;
-  const res = await fetch(`${API_BASE}/trading/orders/${q}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/trading/orders/${q}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
 export async function apiCancelOrder(id: number): Promise<PaperOrder> {
-  const res = await fetch(`${API_BASE}/trading/orders/${id}/cancel/`, {
+  const res = await authFetch(`${API_BASE}/trading/orders/${id}/cancel/`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
 export async function apiClosePosition(id: number): Promise<Position> {
-  const res = await fetch(`${API_BASE}/trading/positions/${id}/close/`, {
+  const res = await authFetch(`${API_BASE}/trading/positions/${id}/close/`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -390,9 +457,8 @@ export async function apiAdjustPosition(
   id: number,
   input: { action: "add" | "trim"; notional: number }
 ): Promise<Position> {
-  const res = await fetch(`${API_BASE}/trading/positions/${id}/adjust/`, {
+  const res = await authFetch(`${API_BASE}/trading/positions/${id}/adjust/`, {
     method: "POST",
-    headers: authHeaders(),
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await parseError(res));
@@ -403,9 +469,8 @@ export async function apiProtectPosition(
   id: number,
   input: { stop_loss?: number | null; take_profit?: number | null }
 ): Promise<Position> {
-  const res = await fetch(`${API_BASE}/trading/positions/${id}/protect/`, {
+  const res = await authFetch(`${API_BASE}/trading/positions/${id}/protect/`, {
     method: "PATCH",
-    headers: authHeaders(),
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await parseError(res));
@@ -432,25 +497,22 @@ export async function apiNotifications(
   unreadOnly = false
 ): Promise<NotificationsResponse> {
   const q = unreadOnly ? "?unread=1" : "";
-  const res = await fetch(`${API_BASE}/auth/notifications/${q}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/auth/notifications/${q}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
 export async function apiMarkNotificationRead(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/auth/notifications/${id}/read/`, {
+  const res = await authFetch(`${API_BASE}/auth/notifications/${id}/read/`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function apiMarkAllNotificationsRead(): Promise<void> {
-  const res = await fetch(`${API_BASE}/auth/notifications/read-all/`, {
+  const res = await authFetch(`${API_BASE}/auth/notifications/read-all/`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
 }
@@ -501,9 +563,9 @@ export type FollowActionResponse = {
 };
 
 export async function apiFollow(username: string): Promise<FollowActionResponse> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/auth/follow/${encodeURIComponent(username)}/`,
-    { method: "POST", headers: authHeaders() }
+    { method: "POST" }
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -512,17 +574,16 @@ export async function apiFollow(username: string): Promise<FollowActionResponse>
 export async function apiUnfollow(
   username: string
 ): Promise<FollowActionResponse> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/auth/follow/${encodeURIComponent(username)}/`,
-    { method: "DELETE", headers: authHeaders() }
+    { method: "DELETE" }
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
 export async function apiMySocial(): Promise<MySocial> {
-  const res = await fetch(`${API_BASE}/auth/me/social/`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/auth/me/social/`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -531,9 +592,8 @@ export async function apiMySocial(): Promise<MySocial> {
 export async function apiFollowers(
   username: string
 ): Promise<SocialListResponse> {
-  const res = await fetch(
-    `${API_BASE}/auth/users/${encodeURIComponent(username)}/followers/`,
-    { headers: authHeaders() }
+  const res = await authFetch(
+    `${API_BASE}/auth/users/${encodeURIComponent(username)}/followers/`
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -542,9 +602,8 @@ export async function apiFollowers(
 export async function apiFollowing(
   username: string
 ): Promise<SocialListResponse> {
-  const res = await fetch(
-    `${API_BASE}/auth/users/${encodeURIComponent(username)}/following/`,
-    { headers: authHeaders() }
+  const res = await authFetch(
+    `${API_BASE}/auth/users/${encodeURIComponent(username)}/following/`
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -552,8 +611,7 @@ export async function apiFollowing(
 
 export async function apiTraders(q = ""): Promise<TraderSummary[]> {
   const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-  const res = await fetch(`${API_BASE}/trading/traders/${qs}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/trading/traders/${qs}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -562,9 +620,9 @@ export async function apiTraders(q = ""): Promise<TraderSummary[]> {
 export async function apiTraderHistory(
   username: string
 ): Promise<TraderHistory> {
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/trading/traders/${encodeURIComponent(username)}/`,
-    { headers: authHeaders() }
+    {}
   );
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -605,8 +663,7 @@ export async function apiLeaderboard(opts: {
   if (opts.metric) params.set("metric", opts.metric);
   if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString() ? `?${params}` : "";
-  const res = await fetch(`${API_BASE}/trading/leaderboard/${qs}`, {
-    headers: authHeaders(),
+  const res = await authFetch(`${API_BASE}/trading/leaderboard/${qs}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();

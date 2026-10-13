@@ -29,7 +29,9 @@ export const metadata: Metadata = {
   description:
     "TradeArena is a free paper-trading arena for crypto and forex. Traders compete on public leaderboards. Viewers follow every move.",
   icons: {
-    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
   },
 };
 

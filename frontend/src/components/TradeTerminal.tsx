@@ -1,10 +1,12 @@
 "use client";
 
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import PendingButton from "@/components/PendingButton";
 
 const TradingViewChart = dynamic(() => import("@/components/TradingViewChart"), {
   ssr: false,
@@ -81,6 +83,19 @@ function isValidPrice(raw: unknown): raw is string | number {
   if (raw == null || raw === "") return false;
   const n = typeof raw === "number" ? raw : Number(raw);
   return Number.isFinite(n) && n > 0;
+}
+
+/** Always keep fraction digits so 123.00 and 123.34 occupy the same width. */
+function formatLastPrice(raw: string | undefined | null): string {
+  if (!isValidPrice(raw)) return "—";
+  const v = Number(raw);
+  const frac = String(raw).split(".")[1] ?? "";
+  const significant = frac.replace(/0+$/, "").length;
+  const decimals = Math.max(2, Math.min(8, significant || 2));
+  return v.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
 }
 
 function wsPayload(msg: Record<string, unknown>): Record<string, unknown> {
@@ -310,7 +325,7 @@ export default function TradeTerminal() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       const sl = stopLoss.trim() ? Number(stopLoss) : null;
@@ -336,7 +351,7 @@ export default function TradeTerminal() {
   }
 
   async function onClose(id: number) {
-    setBusy(true);
+    flushSync(() => setBusy(true));
     try {
       await apiClosePosition(id);
       await refreshAccount();
@@ -349,7 +364,7 @@ export default function TradeTerminal() {
 
   async function onProtectSave() {
     if (adjustId == null) return;
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       const sl = editSl.trim() ? Number(editSl) : null;
@@ -369,7 +384,7 @@ export default function TradeTerminal() {
 
   async function onAdjust() {
     if (adjustId == null || adjustAction === "protect") return;
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       await apiAdjustPosition(adjustId, {
@@ -386,7 +401,7 @@ export default function TradeTerminal() {
   }
 
   async function onCancelOrder(id: number) {
-    setBusy(true);
+    flushSync(() => setBusy(true));
     try {
       await apiCancelOrder(id);
       await refreshAccount();
@@ -477,8 +492,8 @@ export default function TradeTerminal() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-baseline gap-4">
-              <div>
+            <div className="flex flex-nowrap items-center gap-5">
+              <div className="shrink-0">
                 <p
                   className="text-2xl md:text-3xl"
                   style={{ fontFamily: "var(--font-display)", fontWeight: 700 }}
@@ -487,22 +502,22 @@ export default function TradeTerminal() {
                 </p>
                 <p className="text-xs uppercase text-muted">{market} · Binance</p>
               </div>
-              <div>
+              <div className="min-w-[12ch]">
                 <p
-                  className={`text-2xl ${change >= 0 ? "text-accent" : "text-danger"}`}
+                  className={`text-2xl tabular-nums ${change >= 0 ? "text-accent" : "text-danger"}`}
                   style={{ fontFamily: "var(--font-display)", fontWeight: 700 }}
                 >
-                  {last ? Number(last).toLocaleString() : "—"}
+                  {formatLastPrice(last)}
                 </p>
                 <p
-                  className={`text-xs ${change >= 0 ? "text-accent" : "text-danger"}`}
+                  className={`text-xs tabular-nums ${change >= 0 ? "text-accent" : "text-danger"}`}
                 >
                   {change >= 0 ? "+" : ""}
                   {change.toFixed(2)}%
                 </p>
               </div>
               <span
-                className={`rounded-full border px-3 py-1 text-xs ${
+                className={`inline-flex h-7 w-[7.5rem] shrink-0 items-center justify-center rounded-full border text-xs ${
                   live
                     ? "border-accent/40 text-accent"
                     : "border-border text-muted"
@@ -719,20 +734,17 @@ export default function TradeTerminal() {
                     </span>
                   </p>
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className={`w-full rounded-lg py-3 text-sm font-semibold disabled:opacity-50 ${
+                <PendingButton
+                  pending={busy}
+                  pendingLabel="Sending order…"
+                  className={`rounded-lg ${
                     side === "long"
                       ? "bg-accent text-black"
                       : "bg-danger text-white"
                   }`}
-                  style={{ fontFamily: "var(--font-display)" }}
                 >
-                  {busy
-                    ? "Sending…"
-                    : `${orderType === "limit" ? "Place limit" : "Place market"} ${side}`}
-                </button>
+                  {`${orderType === "limit" ? "Place limit" : "Place market"} ${side}`}
+                </PendingButton>
               </form>
             </section>
           </div>
@@ -761,8 +773,8 @@ export default function TradeTerminal() {
                     <span className="text-right text-muted/70">—</span>
                   </div>
                 ))}
-                <div className="my-2 border-y border-border px-2 py-2 text-center text-sm text-foreground">
-                  {last ? Number(last).toLocaleString() : "—"}
+                <div className="my-2 border-y border-border px-2 py-2 text-center text-sm tabular-nums text-foreground">
+                  {formatLastPrice(last)}
                 </div>
                 {bids.slice(0, 12).map((b, i) => (
                   <div

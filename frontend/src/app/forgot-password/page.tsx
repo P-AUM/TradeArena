@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import PendingButton from "@/components/PendingButton";
+import { useImmediatePending } from "@/lib/pending";
 import {
   apiForgotPassword,
   apiResetPassword,
@@ -23,14 +25,15 @@ export default function ForgotPasswordPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [devCode, setDevCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const { pending, startPending, stopPending } = useImmediatePending();
 
   async function onSendCode(e: FormEvent) {
     e.preventDefault();
+    if (pending) return;
     setError(null);
     setMessage(null);
     setDevCode(null);
-    setPending(true);
+    startPending();
     try {
       const res = await apiForgotPassword(email);
       setMessage(res.detail);
@@ -42,15 +45,16 @@ export default function ForgotPasswordPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send code");
     } finally {
-      setPending(false);
+      stopPending();
     }
   }
 
   async function onVerifyCode(e: FormEvent) {
     e.preventDefault();
+    if (pending) return;
     setError(null);
     setMessage(null);
-    setPending(true);
+    startPending();
     try {
       const res = await apiVerifyResetCode({
         email,
@@ -61,19 +65,20 @@ export default function ForgotPasswordPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid code");
     } finally {
-      setPending(false);
+      stopPending();
     }
   }
 
   async function onReset(e: FormEvent) {
     e.preventDefault();
+    if (pending) return;
     setError(null);
     setMessage(null);
     if (newPassword !== confirm) {
       setError("Passwords do not match.");
       return;
     }
-    setPending(true);
+    startPending();
     try {
       const res = await apiResetPassword({
         email,
@@ -86,7 +91,7 @@ export default function ForgotPasswordPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reset failed");
     } finally {
-      setPending(false);
+      stopPending();
     }
   }
 
@@ -112,31 +117,49 @@ export default function ForgotPasswordPage() {
             </p>
 
             {step === "email" ? (
-              <form onSubmit={onSendCode} className="mt-10 space-y-5">
+              <form
+                method="post"
+                action="#"
+                onSubmit={onSendCode}
+                className="mt-10 space-y-5"
+              >
                 <label className="block">
                   <span className="eyebrow">Registered email</span>
                   <input
                     required
                     type="email"
                     value={email}
+                    disabled={pending}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                    className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                     autoComplete="email"
                   />
                 </label>
                 {error ? (
                   <p className="text-sm text-danger" role="alert">
                     {error}
+                    {/not found/i.test(error) ? (
+                      <>
+                        {" "}
+                        <Link href="/signup" className="text-foreground hover:underline">
+                          Create an account
+                        </Link>
+                      </>
+                    ) : null}
                   </p>
                 ) : null}
-                <button
-                  type="submit"
-                  disabled={pending}
-                  className="w-full rounded-full bg-accent px-6 py-3.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
-                  style={{ fontFamily: "var(--font-display)" }}
+                <PendingButton
+                  pending={pending}
+                  pendingLabel="Sending code…"
+                  className="bg-accent text-black"
                 >
-                  {pending ? "Sending…" : "Send verification code"}
-                </button>
+                  Send verification code
+                </PendingButton>
+                {pending ? (
+                  <p className="text-center text-xs text-muted" aria-live="assertive">
+                    Please wait…
+                  </p>
+                ) : null}
               </form>
             ) : null}
 
@@ -169,14 +192,14 @@ export default function ForgotPasswordPage() {
                     {error}
                   </p>
                 ) : null}
-                <button
-                  type="submit"
-                  disabled={pending || code.length !== 6}
-                  className="w-full rounded-full bg-accent px-6 py-3.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
-                  style={{ fontFamily: "var(--font-display)" }}
+                <PendingButton
+                  pending={pending}
+                  pendingLabel="Verifying…"
+                  disabled={code.length !== 6}
+                  className="bg-accent text-black"
                 >
-                  {pending ? "Verifying…" : "Verify code"}
-                </button>
+                  Verify code
+                </PendingButton>
                 <button
                   type="button"
                   onClick={() => {
@@ -226,14 +249,13 @@ export default function ForgotPasswordPage() {
                     {error}
                   </p>
                 ) : null}
-                <button
-                  type="submit"
-                  disabled={pending}
-                  className="w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
-                  style={{ fontFamily: "var(--font-display)" }}
+                <PendingButton
+                  pending={pending}
+                  pendingLabel="Updating password…"
+                  className="bg-foreground text-black"
                 >
-                  {pending ? "Updating…" : "Update password"}
-                </button>
+                  Update password
+                </PendingButton>
               </form>
             ) : null}
 

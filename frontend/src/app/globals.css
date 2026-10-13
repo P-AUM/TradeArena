@@ -103,3 +103,25 @@ body {
 .accent-text {
   color: var(--accent);
 }
+
+.btn-spinner {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: btn-spin 0.55s linear infinite;
+}
+
+.btn-spinner-lg {
+  width: 1.15rem;
+  height: 1.15rem;
+  border-width: 2.5px;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
