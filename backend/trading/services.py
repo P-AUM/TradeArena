@@ -142,8 +142,102 @@ def _open_position(
     )
 
 
+def get_open_position(
+    user, market: str, symbol: str, *, for_update: bool = False
+) -> Position | None:
+    """At most one open position per user + market + symbol."""
+    qs = Position.objects.filter(
+        user=user,
+        market=market,
+        symbol=symbol,
+        status=Position.Status.OPEN,
+    )
+    if for_update:
+        qs = qs.select_for_update()
+    return qs.first()
+
+
+def _refund_order_margin(order: PaperOrder) -> None:
+    wallet = Wallet.objects.select_for_update().get(
+        user_id=order.user_id, market=order.market
+    )
+    refund = order.margin if order.margin > 0 else order.notional
+    wallet.balance = (wallet.balance + refund).quantize(Decimal("0.01"))
+    wallet.save(update_fields=["balance", "updated_at"])
+
+
+def _merge_into_position(
+    position: Position,
+    *,
+    notional: Decimal,
+    price: Decimal,
+    margin: Decimal,
+    stop_loss: Decimal | None = None,
+    take_profit: Decimal | None = None,
+) -> Position:
+    """Add size at price; weighted-average entry. Margin already reserved."""
+    add_qty = (notional / price).quantize(Decimal("0.00000001"))
+    if add_qty <= 0:
+        raise ValueError("Invalid add size at current price.")
+
+    old_qty = position.quantity
+    new_qty = old_qty + add_qty
+    new_entry = ((position.entry_price * old_qty) + (price * add_qty)) / new_qty
+    new_entry = new_entry.quantize(Decimal("0.00000001"))
+
+    new_sl = stop_loss if stop_loss is not None else position.stop_loss
+    new_tp = take_profit if take_profit is not None else position.take_profit
+    validate_sl_tp(position.side, new_entry, new_sl, new_tp)
+
+    position.quantity = new_qty
+    position.entry_price = new_entry
+    position.notional = (position.notional + notional).quantize(Decimal("0.01"))
+    position.margin = (position.margin + margin).quantize(Decimal("0.01"))
+    position.stop_loss = new_sl
+    position.take_profit = new_tp
+    position.save(
+        update_fields=[
+            "quantity",
+            "entry_price",
+            "notional",
+            "margin",
+            "stop_loss",
+            "take_profit",
+        ]
+    )
+    return position
+
+
 def fill_order_now(order: PaperOrder, price: Decimal) -> PaperOrder:
-    """Consume reserved margin already deducted; open position at price."""
+    """Consume reserved margin; open new or merge into existing same-side position."""
+    existing = get_open_position(
+        order.user, order.market, order.symbol, for_update=True
+    )
+
+    if existing is not None:
+        if existing.side != order.side:
+            _refund_order_margin(order)
+            order.status = PaperOrder.Status.CANCELLED
+            order.save(update_fields=["status"])
+            raise ValueError(
+                f"Cannot open {order.side} on {order.symbol}: you already have an "
+                f"open {existing.side}. Close it or add to the same side only."
+            )
+        position = _merge_into_position(
+            existing,
+            notional=order.notional,
+            price=price,
+            margin=order.margin,
+            stop_loss=order.stop_loss,
+            take_profit=order.take_profit,
+        )
+        order.status = PaperOrder.Status.FILLED
+        order.position = position
+        order.filled_at = timezone.now()
+        order.save(update_fields=["status", "position", "filled_at"])
+        _notify_add(order.user, position, order.notional)
+        return order
+
     position = _open_position(
         order.user,
         order.market,
@@ -177,6 +271,24 @@ def _notify_open(user, position: Position) -> None:
             f"${position.notional} @ {position.entry_price} ({position.leverage}x)"
         ),
     )
+
+
+def _notify_add(user, position: Position, added_notional: Decimal) -> None:
+    from accounts.notifications import notify_followers_of_trade
+    from accounts.models import Notification
+
+    try:
+        notify_followers_of_trade(
+            user,
+            kind=Notification.Kind.TRADE_OPEN,
+            title=f"@{user.username} added to {position.side}",
+            body=(
+                f"{position.side.upper()} {position.symbol} - "
+                f"+${added_notional} (now ${position.notional} @ {position.entry_price})"
+            ),
+        )
+    except Exception:
+        pass
 
 
 def _notify_close(
@@ -418,25 +530,7 @@ def try_stop_take_profit(user) -> int:
             )
             if not locked:
                 continue
-            close_side = (
-                "short" if locked.side == Position.Side.LONG else "long"
-            )
-            try:
-                # Prefer live exit; fall back to trigger price
-                live = get_fill_price(locked.market, locked.symbol, close_side)
-                # For SL/TP paper fill, use the more conservative of trigger vs live
-                if reason == "stop-loss":
-                    if locked.side == Position.Side.LONG:
-                        exit_px = min(live, exit_px)
-                    else:
-                        exit_px = max(live, exit_px)
-                else:
-                    if locked.side == Position.Side.LONG:
-                        exit_px = max(live, exit_px)
-                    else:
-                        exit_px = min(live, exit_px)
-            except Exception:
-                pass
+            # Exact fill at SL/TP trigger price (no bid/ask slippage)
             close_position_at(locked, exit_px, reason=reason)
             closed += 1
     return closed
@@ -508,8 +602,12 @@ def try_fill_open_orders(user) -> int:
                 )
                 if not locked:
                     continue
-                fill_order_now(locked, fill_px)
-                filled += 1
+                try:
+                    fill_order_now(locked, fill_px)
+                    filled += 1
+                except ValueError:
+                    # Opposite-side conflict: order cancelled + margin refunded
+                    pass
     try_stop_take_profit(user)
     try_liquidate_positions(user)
     return filled
@@ -528,15 +626,46 @@ def place_order(
     stop_loss: Decimal | None = None,
     take_profit: Decimal | None = None,
 ) -> PaperOrder:
-    lev = clamp_leverage(market, leverage)
-    margin = calc_margin(notional, lev)
     # Soft validate vs limit or leave entry check to fill
     ref = limit_price
     if ref is not None:
         validate_sl_tp(side, ref, stop_loss, take_profit)
 
+    opposite = (
+        Position.Side.SHORT
+        if side == Position.Side.LONG
+        else Position.Side.LONG
+    )
+
     with transaction.atomic():
+        # Lock wallet first, then position (consistent lock order)
         wallet = Wallet.objects.select_for_update().get(user=user, market=market)
+        existing = get_open_position(user, market, symbol, for_update=True)
+        if existing is not None and existing.side != side:
+            raise ValueError(
+                f"Cannot open {side} on {symbol}: you already have an open "
+                f"{existing.side}. Close it or add size on the same side only."
+            )
+
+        if PaperOrder.objects.filter(
+            user=user,
+            market=market,
+            symbol=symbol,
+            status=PaperOrder.Status.OPEN,
+            side=opposite,
+        ).exists():
+            raise ValueError(
+                f"Cannot place {side} on {symbol}: an opposite {opposite} "
+                f"order is already open. Cancel it first."
+            )
+
+        # Merging into an open position keeps that position's leverage
+        if existing is not None:
+            lev = int(existing.leverage or 1)
+        else:
+            lev = clamp_leverage(market, leverage)
+        margin = calc_margin(notional, lev)
+
         if wallet.balance < margin:
             raise ValueError(
                 f"Insufficient {market} balance for margin {margin} "
@@ -580,8 +709,8 @@ def place_order(
         ) or (side == Position.Side.SHORT and limit_price <= bid)
 
         if marketable:
-            price = ask if side == Position.Side.LONG else bid
-            return fill_order_now(order, price)
+            # Exact fill at limit price (paper maker fill)
+            return fill_order_now(order, limit_price)
 
         return order
 

@@ -155,7 +155,7 @@ class WalletListView(APIView):
                 {"detail": "Wallets are for traders only."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        try_fill_open_orders(request.user)
+        # SL/TP/limit fills run on positions GET (avoid triple-check every poll)
         wallets = ensure_wallets(request.user)
         return Response(WalletSerializer(wallets, many=True).data)
 
@@ -237,7 +237,7 @@ class OrderListCreateView(APIView):
 
     def get(self, request):
         ensure_wallets(request.user)
-        try_fill_open_orders(request.user)
+        # Fills/SL checked on positions GET
         status_filter = request.query_params.get("status", "open")
         qs = PaperOrder.objects.filter(user=request.user)
         if status_filter in ("open", "filled", "cancelled"):

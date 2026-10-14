@@ -9,11 +9,12 @@ import { useAuth } from "@/lib/auth";
 
 function prefetchTvScript() {
   if (typeof document === "undefined") return;
-  if (document.getElementById("tradingview-widget-script")) return;
+  if (document.getElementById("tradingview-preload")) return;
   const link = document.createElement("link");
   link.rel = "preload";
   link.as = "script";
-  link.href = "https://s3.tradingview.com/tv.js";
+  link.href =
+    "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
   link.id = "tradingview-preload";
   document.head.appendChild(link);
 }
