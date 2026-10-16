@@ -47,6 +47,7 @@ class PositionSerializer(serializers.ModelSerializer):
             "take_profit",
             "opened_at",
             "closed_at",
+            "tournament",
             "mark_price",
             "unrealized_pnl",
             "liquidation_price",
@@ -105,6 +106,7 @@ class PaperOrderSerializer(serializers.ModelSerializer):
             "position",
             "created_at",
             "filled_at",
+            "tournament",
         )
         read_only_fields = fields
 
@@ -129,6 +131,7 @@ class PlaceOrderSerializer(serializers.Serializer):
     take_profit = serializers.DecimalField(
         max_digits=18, decimal_places=8, required=False, allow_null=True
     )
+    tournament_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate(self, attrs):
         market = attrs["market"]
@@ -176,10 +179,25 @@ class PlaceOrderSerializer(serializers.Serializer):
                             "symbol": f"Unknown Binance {market} symbol: {symbol} ({exc})"
                         }
                     ) from exc
+
+        tid = attrs.get("tournament_id")
+        if tid is not None:
+            from tournaments.models import Tournament
+
+            try:
+                attrs["_tournament"] = Tournament.objects.get(pk=tid)
+            except Tournament.DoesNotExist as exc:
+                raise serializers.ValidationError(
+                    {"tournament_id": "Tournament not found."}
+                ) from exc
+        else:
+            attrs["_tournament"] = None
         return attrs
 
     def create(self, validated_data):
         user = self.context["request"].user
+        tournament = validated_data.pop("_tournament", None)
+        validated_data.pop("tournament_id", None)
         try:
             return place_order(
                 user,
@@ -192,6 +210,7 @@ class PlaceOrderSerializer(serializers.Serializer):
                 limit_price=validated_data.get("limit_price"),
                 stop_loss=validated_data.get("stop_loss"),
                 take_profit=validated_data.get("take_profit"),
+                tournament=tournament,
             )
         except ValueError as exc:
             raise serializers.ValidationError({"detail": str(exc)}) from exc

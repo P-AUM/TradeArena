@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import dynamic from "next/dynamic";
 import Navbar from "@/components/Navbar";
 
@@ -23,5 +24,16 @@ const TradeTerminal = dynamic(() => import("@/components/TradeTerminal"), {
 });
 
 export default function TradePage() {
-  return <TradeTerminal />;
+  return (
+    <Suspense
+      fallback={
+        <>
+          <Navbar />
+          <main className="pt-32 px-6 text-muted">Loading terminal…</main>
+        </>
+      }
+    >
+      <TradeTerminal />
+    </Suspense>
+  );
 }

@@ -68,6 +68,14 @@ class Position(models.Model):
     )
     opened_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    # Null = normal paper account; set = isolated tournament book
+    tournament = models.ForeignKey(
+        "tournaments.Tournament",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="positions",
+    )
 
     class Meta:
         ordering = ["-opened_at"]
@@ -121,6 +129,13 @@ class PaperOrder(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     filled_at = models.DateTimeField(null=True, blank=True)
+    tournament = models.ForeignKey(
+        "tournaments.Tournament",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="orders",
+    )
 
     class Meta:
         ordering = ["-created_at"]

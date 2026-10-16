@@ -13,7 +13,7 @@ import {
 import { flushSync } from "react-dom";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import PendingButton from "@/components/PendingButton";
 
@@ -138,6 +138,11 @@ function liveUpnlPct(p: Position, upnl: number | null) {
 export default function TradeTerminal() {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const tournamentParam = searchParams.get("tournament");
+  const tournamentId = tournamentParam ? Number(tournamentParam) : null;
+  const inTournament =
+    tournamentId != null && Number.isFinite(tournamentId) && tournamentId > 0;
 
   const [market, setMarket] = useState<BookSide>("spot");
   const [symbol, setSymbol] = useState("BTCUSDT");
@@ -253,17 +258,21 @@ export default function TradeTerminal() {
 
   const refreshAccount = useCallback(async () => {
     try {
+      const tid = inTournament ? tournamentId : null;
       // Positions first — backend runs SL/TP/limit/liquidation checks here
-      const p = await apiPositions("open");
+      const p = await apiPositions("open", tid);
       setPositions(p);
       positionsRef.current = p;
-      const [w, o] = await Promise.all([apiWallets(), apiOrders("open")]);
+      const [w, o] = await Promise.all([
+        apiWallets(tid),
+        apiOrders("open", tid),
+      ]);
       setWallets(w);
       setOpenOrders(o);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Account load failed");
     }
-  }, []);
+  }, [inTournament, tournamentId]);
 
   /** Near-instant SL/TP check when live price crosses (throttled). */
   const scheduleProtectCheck = useCallback(() => {
@@ -440,6 +449,7 @@ export default function TradeTerminal() {
           orderType === "limit" ? Number(limitPrice) : undefined,
         stop_loss: sl && sl > 0 ? sl : null,
         take_profit: tp && tp > 0 ? tp : null,
+        tournament_id: inTournament ? tournamentId : null,
       });
       await refreshAccount();
     } catch (err) {
@@ -531,6 +541,23 @@ export default function TradeTerminal() {
       <Navbar />
       <main className="relative min-h-screen overflow-x-hidden bg-background pt-24 pb-28">
         <div className="mx-auto max-w-[1600px] px-4">
+          {inTournament ? (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3 text-sm">
+              <p>
+                <span className="font-semibold text-accent">Tournament mode</span>
+                <span className="text-muted">
+                  {" "}
+                  · isolated $10k wallets · crypto spot &amp; futures only
+                </span>
+              </p>
+              <Link
+                href="/tournaments"
+                className="text-muted underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Back to tournaments
+              </Link>
+            </div>
+          ) : null}
           {/* Top bar */}
           <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
             <div className="flex rounded-full border border-border p-1 text-sm">

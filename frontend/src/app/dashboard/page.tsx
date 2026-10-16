@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import AdminDashboard from "@/components/AdminDashboard";
 import TraderDashboard from "@/components/TraderDashboard";
 import ViewerDashboard from "@/components/ViewerDashboard";
 import { useAuth } from "@/lib/auth";
@@ -28,6 +29,8 @@ export default function DashboardPage() {
             </div>
           ) : user.role === "trader" ? (
             <TraderDashboard user={user} />
+          ) : user.role === "admin" ? (
+            <AdminDashboard user={user} />
           ) : (
             <ViewerDashboard user={user} />
           )}

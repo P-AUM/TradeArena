@@ -1,12 +1,23 @@
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.db import models
 from django.utils import timezone
+
+
+class UserManager(DjangoUserManager):
+    """createsuperuser → TradeArena role=admin + Django staff/superuser."""
+
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        extra_fields["role"] = User.Role.ADMIN
+        return super().create_superuser(username, email, password, **extra_fields)
 
 
 class User(AbstractUser):
     class Role(models.TextChoices):
         TRADER = "trader", "Trader"
         VIEWER = "viewer", "Viewer"
+        ADMIN = "admin", "Admin"
 
     email = models.EmailField(unique=True)
     role = models.CharField(
@@ -15,7 +26,17 @@ class User(AbstractUser):
         help_text="Locked at signup. Cannot be changed.",
     )
 
-    REQUIRED_FIELDS = ["email", "role"]
+    objects = UserManager()
+
+    # role is set automatically for createsuperuser; do not prompt for it
+    REQUIRED_FIELDS = ["email"]
+
+    def save(self, *args, **kwargs):
+        # Keep project admin role aligned with Django superuser
+        if self.is_superuser:
+            self.role = self.Role.ADMIN
+            self.is_staff = True
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.username} ({self.role})"

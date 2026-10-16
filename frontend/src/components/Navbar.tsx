@@ -66,17 +66,26 @@ export default function Navbar() {
       ? [
           { label: "Dashboard", href: "/dashboard" },
           { label: "Trade", href: "/trade" },
+          { label: "Tournaments", href: "/tournaments" },
           { label: "History", href: `/traders/${encodeURIComponent(user.username)}` },
           { label: "Leaderboard", href: "/leaderboard" },
           { label: "Following", href: "/social" },
           { label: "Traders", href: "/traders" },
         ]
-      : [
-          { label: "Dashboard", href: "/dashboard" },
-          { label: "Leaderboard", href: "/leaderboard" },
-          { label: "Following", href: "/social" },
-          { label: "Traders", href: "/traders" },
-        ];
+      : user?.role === "admin"
+        ? [
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Tournaments", href: "/tournaments" },
+            { label: "Leaderboard", href: "/leaderboard" },
+            { label: "Traders", href: "/traders" },
+          ]
+        : [
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Tournaments", href: "/tournaments" },
+            { label: "Leaderboard", href: "/leaderboard" },
+            { label: "Following", href: "/social" },
+            { label: "Traders", href: "/traders" },
+          ];
 
   // Warm route chunks so History → Trade feels instant
   useEffect(() => {

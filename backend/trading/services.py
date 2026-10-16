@@ -123,6 +123,7 @@ def _open_position(
     margin: Decimal,
     stop_loss: Decimal | None = None,
     take_profit: Decimal | None = None,
+    tournament=None,
 ) -> Position:
     validate_sl_tp(side, price, stop_loss, take_profit)
     quantity = (notional / price).quantize(Decimal("0.00000001"))
@@ -139,27 +140,58 @@ def _open_position(
         stop_loss=stop_loss,
         take_profit=take_profit,
         status=Position.Status.OPEN,
+        tournament=tournament,
+    )
+
+
+def _wallet_qs(*, tournament=None, for_update: bool = False):
+    if tournament is not None:
+        from tournaments.models import TournamentWallet
+
+        qs = TournamentWallet.objects.filter(tournament=tournament)
+    else:
+        qs = Wallet.objects.all()
+    if for_update:
+        qs = qs.select_for_update()
+    return qs
+
+
+def get_wallet(user, market: str, *, tournament=None, for_update: bool = False):
+    return _wallet_qs(tournament=tournament, for_update=for_update).get(
+        user=user, market=market
     )
 
 
 def get_open_position(
-    user, market: str, symbol: str, *, for_update: bool = False
+    user,
+    market: str,
+    symbol: str,
+    *,
+    for_update: bool = False,
+    tournament=None,
 ) -> Position | None:
-    """At most one open position per user + market + symbol."""
+    """At most one open position per user + market + symbol (+ tournament book)."""
     qs = Position.objects.filter(
         user=user,
         market=market,
         symbol=symbol,
         status=Position.Status.OPEN,
     )
+    if tournament is None:
+        qs = qs.filter(tournament__isnull=True)
+    else:
+        qs = qs.filter(tournament=tournament)
     if for_update:
         qs = qs.select_for_update()
     return qs.first()
 
 
 def _refund_order_margin(order: PaperOrder) -> None:
-    wallet = Wallet.objects.select_for_update().get(
-        user_id=order.user_id, market=order.market
+    wallet = get_wallet(
+        order.user,
+        order.market,
+        tournament=order.tournament,
+        for_update=True,
     )
     refund = order.margin if order.margin > 0 else order.notional
     wallet.balance = (wallet.balance + refund).quantize(Decimal("0.01"))
@@ -211,7 +243,11 @@ def _merge_into_position(
 def fill_order_now(order: PaperOrder, price: Decimal) -> PaperOrder:
     """Consume reserved margin; open new or merge into existing same-side position."""
     existing = get_open_position(
-        order.user, order.market, order.symbol, for_update=True
+        order.user,
+        order.market,
+        order.symbol,
+        for_update=True,
+        tournament=order.tournament,
     )
 
     if existing is not None:
@@ -235,7 +271,8 @@ def fill_order_now(order: PaperOrder, price: Decimal) -> PaperOrder:
         order.position = position
         order.filled_at = timezone.now()
         order.save(update_fields=["status", "position", "filled_at"])
-        _notify_add(order.user, position, order.notional)
+        if order.tournament_id is None:
+            _notify_add(order.user, position, order.notional)
         return order
 
     position = _open_position(
@@ -249,12 +286,14 @@ def fill_order_now(order: PaperOrder, price: Decimal) -> PaperOrder:
         order.margin,
         stop_loss=order.stop_loss,
         take_profit=order.take_profit,
+        tournament=order.tournament,
     )
     order.status = PaperOrder.Status.FILLED
     order.position = position
     order.filled_at = timezone.now()
     order.save(update_fields=["status", "position", "filled_at"])
-    _notify_open(order.user, position)
+    if order.tournament_id is None:
+        _notify_open(order.user, position)
     return order
 
 
@@ -338,8 +377,11 @@ def close_position_at(
     notify: bool = True,
 ) -> Position:
     """Return margin + PnL to wallet and mark closed. Caller holds locks."""
-    wallet = Wallet.objects.select_for_update().get(
-        user_id=position.user_id, market=position.market
+    wallet = get_wallet(
+        position.user,
+        position.market,
+        tournament=position.tournament,
+        for_update=True,
     )
     diff = exit_price - position.entry_price
     if position.side == Position.Side.SHORT:
@@ -360,7 +402,7 @@ def close_position_at(
     position.save(
         update_fields=["status", "exit_price", "realized_pnl", "closed_at"]
     )
-    if notify:
+    if notify and position.tournament_id is None:
         try:
             _notify_close(position.user, position, reason=reason)
         except Exception:
@@ -382,8 +424,11 @@ def add_to_position(user, position_id: int, extra_notional: Decimal) -> Position
 
         lev = int(position.leverage or 1)
         extra_margin = calc_margin(extra_notional, lev)
-        wallet = Wallet.objects.select_for_update().get(
-            user=user, market=position.market
+        wallet = get_wallet(
+            user,
+            position.market,
+            tournament=position.tournament,
+            for_update=True,
         )
         if wallet.balance < extra_margin:
             raise ValueError(
@@ -470,8 +515,11 @@ def trim_position(user, position_id: int, reduce_notional: Decimal) -> Position:
         if proceeds < 0:
             proceeds = Decimal("0.00")
 
-        wallet = Wallet.objects.select_for_update().get(
-            user=user, market=position.market
+        wallet = get_wallet(
+            user,
+            position.market,
+            tournament=position.tournament,
+            for_update=True,
         )
         wallet.balance = (wallet.balance + proceeds).quantize(Decimal("0.01"))
         wallet.save(update_fields=["balance", "updated_at"])
@@ -625,11 +673,19 @@ def place_order(
     limit_price: Decimal | None = None,
     stop_loss: Decimal | None = None,
     take_profit: Decimal | None = None,
+    tournament=None,
 ) -> PaperOrder:
     # Soft validate vs limit or leave entry check to fill
     ref = limit_price
     if ref is not None:
         validate_sl_tp(side, ref, stop_loss, take_profit)
+
+    if tournament is not None:
+        if market not in ("spot", "futures"):
+            raise ValueError("Tournament trading is crypto only (spot/futures).")
+        from tournaments.services import assert_user_can_trade_tournament
+
+        assert_user_can_trade_tournament(user, tournament)
 
     opposite = (
         Position.Side.SHORT
@@ -639,21 +695,30 @@ def place_order(
 
     with transaction.atomic():
         # Lock wallet first, then position (consistent lock order)
-        wallet = Wallet.objects.select_for_update().get(user=user, market=market)
-        existing = get_open_position(user, market, symbol, for_update=True)
+        wallet = get_wallet(
+            user, market, tournament=tournament, for_update=True
+        )
+        existing = get_open_position(
+            user, market, symbol, for_update=True, tournament=tournament
+        )
         if existing is not None and existing.side != side:
             raise ValueError(
                 f"Cannot open {side} on {symbol}: you already have an open "
                 f"{existing.side}. Close it or add size on the same side only."
             )
 
-        if PaperOrder.objects.filter(
+        open_orders = PaperOrder.objects.filter(
             user=user,
             market=market,
             symbol=symbol,
             status=PaperOrder.Status.OPEN,
             side=opposite,
-        ).exists():
+        )
+        if tournament is None:
+            open_orders = open_orders.filter(tournament__isnull=True)
+        else:
+            open_orders = open_orders.filter(tournament=tournament)
+        if open_orders.exists():
             raise ValueError(
                 f"Cannot place {side} on {symbol}: an opposite {opposite} "
                 f"order is already open. Cancel it first."
@@ -689,6 +754,7 @@ def place_order(
             stop_loss=stop_loss,
             take_profit=take_profit,
             status=PaperOrder.Status.OPEN,
+            tournament=tournament,
         )
 
         if order_type == PaperOrder.OrderType.MARKET:
@@ -720,8 +786,11 @@ def cancel_order(user, order_id: int) -> PaperOrder:
         order = PaperOrder.objects.select_for_update().get(pk=order_id, user=user)
         if order.status != PaperOrder.Status.OPEN:
             raise ValueError("Order is not open.")
-        wallet = Wallet.objects.select_for_update().get(
-            user=user, market=order.market
+        wallet = get_wallet(
+            user,
+            order.market,
+            tournament=order.tournament,
+            for_update=True,
         )
         refund = order.margin if order.margin > 0 else order.notional
         wallet.balance = (wallet.balance + refund).quantize(Decimal("0.01"))

@@ -115,15 +115,52 @@ class TraderHistoryView(APIView):
                 {"detail": "Trader not found."}, status=status.HTTP_404_NOT_FOUND
             )
 
+        from tournaments.services import privacy_blocks_trader_view
+
+        blocked = privacy_blocks_trader_view(
+            viewer=request.user, target_trader=trader
+        )
+        if blocked:
+            return Response({"detail": blocked}, status=status.HTTP_403_FORBIDDEN)
+
         # Refresh fills/liq for that trader when anyone views them
         try_fill_open_orders(trader)
 
+        # Hide live-tournament positions from public history; show after end
+        from tournaments.models import Tournament
+
+        live_ids = list(
+            Tournament.objects.filter(status=Tournament.Status.LIVE).values_list(
+                "id", flat=True
+            )
+        )
         open_qs = Position.objects.filter(
             user=trader, status=Position.Status.OPEN
         )
         closed_qs = Position.objects.filter(
             user=trader, status=Position.Status.CLOSED
         )
+        if live_ids:
+            open_qs = open_qs.exclude(tournament_id__in=live_ids)
+            closed_qs = closed_qs.exclude(tournament_id__in=live_ids)
+        # Always exclude other users seeing live tournament books; owner sees own via trade UI
+        if request.user.id != trader.id:
+            open_qs = open_qs.filter(
+                Q(tournament__isnull=True)
+                | Q(tournament__status=Tournament.Status.ENDED)
+            )
+            closed_qs = closed_qs.filter(
+                Q(tournament__isnull=True)
+                | Q(tournament__status=Tournament.Status.ENDED)
+            )
+        else:
+            # Own profile: show normal + ended tournament; hide live tournament here
+            open_qs = open_qs.filter(tournament__isnull=True)
+            closed_qs = closed_qs.filter(
+                Q(tournament__isnull=True)
+                | Q(tournament__status=Tournament.Status.ENDED)
+            )
+
         realized = closed_qs.aggregate(s=Sum("realized_pnl"))["s"] or 0
 
         return Response(
@@ -155,6 +192,22 @@ class WalletListView(APIView):
                 {"detail": "Wallets are for traders only."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        tid = request.query_params.get("tournament_id")
+        if tid:
+            from tournaments.models import TournamentEntry, TournamentWallet
+            from tournaments.serializers import TournamentWalletSerializer
+
+            if not TournamentEntry.objects.filter(
+                tournament_id=tid, user=request.user, paid=True
+            ).exists():
+                return Response(
+                    {"detail": "Not an entrant."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            wallets = TournamentWallet.objects.filter(
+                tournament_id=tid, user=request.user
+            )
+            return Response(TournamentWalletSerializer(wallets, many=True).data)
         # SL/TP/limit fills run on positions GET (avoid triple-check every poll)
         wallets = ensure_wallets(request.user)
         return Response(WalletSerializer(wallets, many=True).data)
@@ -239,7 +292,12 @@ class OrderListCreateView(APIView):
         ensure_wallets(request.user)
         # Fills/SL checked on positions GET
         status_filter = request.query_params.get("status", "open")
+        tid = request.query_params.get("tournament_id")
         qs = PaperOrder.objects.filter(user=request.user)
+        if tid:
+            qs = qs.filter(tournament_id=tid)
+        else:
+            qs = qs.filter(tournament__isnull=True)
         if status_filter in ("open", "filled", "cancelled"):
             qs = qs.filter(status=status_filter)
         return Response(PaperOrderSerializer(qs, many=True).data)
@@ -276,7 +334,12 @@ class PositionListCreateView(APIView):
         ensure_wallets(request.user)
         try_fill_open_orders(request.user)
         status_filter = request.query_params.get("status", "open")
+        tid = request.query_params.get("tournament_id")
         qs = Position.objects.filter(user=request.user)
+        if tid:
+            qs = qs.filter(tournament_id=tid)
+        else:
+            qs = qs.filter(tournament__isnull=True)
         if status_filter in ("open", "closed"):
             qs = qs.filter(status=status_filter)
         return Response(PositionSerializer(qs, many=True).data)

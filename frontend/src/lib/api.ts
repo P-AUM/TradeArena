@@ -2,7 +2,7 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
   "http://127.0.0.1:7777/api";
 
-export type Role = "trader" | "viewer";
+export type Role = "trader" | "viewer" | "admin";
 
 export type AuthUser = {
   id: number;
@@ -301,8 +301,10 @@ export type Ticker = {
   ws: { url: string; stream: string };
 };
 
-export async function apiWallets(): Promise<Wallet[]> {
-  const res = await authFetch(`${API_BASE}/trading/wallets/`);
+export async function apiWallets(tournamentId?: number | null): Promise<Wallet[]> {
+  const q =
+    tournamentId != null ? `?tournament_id=${tournamentId}` : "";
+  const res = await authFetch(`${API_BASE}/trading/wallets/${q}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
@@ -364,10 +366,14 @@ export async function apiTicker(
 }
 
 export async function apiPositions(
-  status: "open" | "closed" | "all" = "open"
+  status: "open" | "closed" | "all" = "open",
+  tournamentId?: number | null
 ): Promise<Position[]> {
-  const q = status === "all" ? "" : `?status=${status}`;
-  const res = await authFetch(`${API_BASE}/trading/positions/${q}`, {
+  const params = new URLSearchParams();
+  if (status !== "all") params.set("status", status);
+  if (tournamentId != null) params.set("tournament_id", String(tournamentId));
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await authFetch(`${API_BASE}/trading/positions/${qs}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -418,6 +424,7 @@ export async function apiPlaceOrder(input: {
   limit_price?: number | null;
   stop_loss?: number | null;
   take_profit?: number | null;
+  tournament_id?: number | null;
 }): Promise<PaperOrder> {
   const res = await authFetch(`${API_BASE}/trading/orders/`, {
     method: "POST",
@@ -428,10 +435,14 @@ export async function apiPlaceOrder(input: {
 }
 
 export async function apiOrders(
-  status: "open" | "filled" | "cancelled" | "all" = "open"
+  status: "open" | "filled" | "cancelled" | "all" = "open",
+  tournamentId?: number | null
 ): Promise<PaperOrder[]> {
-  const q = status === "all" ? "" : `?status=${status}`;
-  const res = await authFetch(`${API_BASE}/trading/orders/${q}`, {
+  const params = new URLSearchParams();
+  if (status !== "all") params.set("status", status);
+  if (tournamentId != null) params.set("tournament_id", String(tournamentId));
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await authFetch(`${API_BASE}/trading/orders/${qs}`, {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -665,6 +676,119 @@ export async function apiLeaderboard(opts: {
   const qs = params.toString() ? `?${params}` : "";
   const res = await authFetch(`${API_BASE}/trading/leaderboard/${qs}`, {
   });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type TournamentStatus =
+  | "scheduled"
+  | "live"
+  | "ended"
+  | "cancelled";
+
+export type Tournament = {
+  id: number;
+  name: string;
+  max_participants: number;
+  entry_fee: string;
+  start_at: string;
+  end_at: string;
+  status: TournamentStatus;
+  prize_pool_pct: string;
+  starting_capital: string;
+  entrant_count: number;
+  duration_seconds: number;
+  i_joined: boolean;
+  prize_pool_estimate: string;
+  settled_at: string | null;
+  created_at: string;
+  leaderboard?: TournamentEntry[];
+};
+
+export type TournamentEntry = {
+  id: number;
+  username: string;
+  paid: boolean;
+  joined_at: string;
+  realized_pnl: string | null;
+  win_rate: string | null;
+  closed_trades: number;
+  winning_trades: number;
+  rank: number | null;
+  prize_amount: string | null;
+};
+
+export type TournamentStanding = {
+  username: string;
+  realized_pnl: string;
+  win_rate: string;
+  closed_trades: number;
+  rank: number;
+};
+
+export async function apiTournaments(): Promise<Tournament[]> {
+  const res = await authFetch(`${API_BASE}/tournaments/`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiTournament(id: number): Promise<Tournament> {
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiCreateTournament(input: {
+  name: string;
+  max_participants: number;
+  entry_fee: number;
+  start_at: string;
+  end_at: string;
+}): Promise<Tournament> {
+  const res = await authFetch(`${API_BASE}/tournaments/`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiJoinTournament(
+  id: number
+): Promise<{ detail: string; entry: TournamentEntry }> {
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/join/`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiTournamentStandings(id: number): Promise<{
+  tournament_id: number;
+  status: TournamentStatus;
+  standings: TournamentStanding[];
+}> {
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/standings/`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiSettleTournament(id: number): Promise<Tournament> {
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/settle/`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function apiTournamentTrades(
+  id: number,
+  username?: string
+): Promise<(Position & { username: string })[]> {
+  const params = new URLSearchParams();
+  if (username) params.set("username", username);
+  const qs = params.toString() ? `?${params}` : "";
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/trades/${qs}`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }

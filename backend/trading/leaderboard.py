@@ -33,7 +33,10 @@ def period_start(period: str) -> datetime | None:
 
 
 def _closed_filter(start: datetime | None) -> Q:
-    q = Q(positions__status=Position.Status.CLOSED)
+    # Main leaderboard excludes tournament books
+    q = Q(positions__status=Position.Status.CLOSED) & Q(
+        positions__tournament__isnull=True
+    )
     if start is not None:
         q &= Q(positions__closed_at__gte=start)
     return q
@@ -71,7 +74,8 @@ def build_leaderboard(
             ),
             open_positions=Count(
                 "positions",
-                filter=Q(positions__status=Position.Status.OPEN),
+                filter=Q(positions__status=Position.Status.OPEN)
+                & Q(positions__tournament__isnull=True),
             ),
         )
         .prefetch_related("wallets")
