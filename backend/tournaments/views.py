@@ -128,6 +128,56 @@ class TournamentMyPositionsView(APIView):
         return Response(PositionSerializer(qs, many=True).data)
 
 
+class TournamentMyView(APIView):
+    """
+    Entrant-only: own performance + open/closed tournament trades.
+    Visible to the joined trader while the event is live (and before end).
+    Does not expose other traders' data.
+    """
+
+    permission_classes = (IsTraderRole,)
+
+    def get(self, request, pk: int):
+        sync_tournament_statuses()
+        try:
+            t = Tournament.objects.get(pk=pk)
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+        t.refresh_status(save=True)
+        if not TournamentEntry.objects.filter(
+            tournament=t, user=request.user, paid=True
+        ).exists():
+            return Response({"detail": "Not an entrant."}, status=403)
+
+        try_fill_open_orders(request.user)
+        st = entry_stats(request.user, t)
+        open_qs = Position.objects.filter(
+            user=request.user,
+            tournament=t,
+            status=Position.Status.OPEN,
+        ).order_by("-opened_at")
+        closed_qs = Position.objects.filter(
+            user=request.user,
+            tournament=t,
+            status=Position.Status.CLOSED,
+        ).order_by("-closed_at", "-opened_at")
+
+        return Response(
+            {
+                "tournament_id": t.id,
+                "status": t.status,
+                "performance": {
+                    "realized_pnl": str(st["realized_pnl"]),
+                    "win_rate": str(st["win_rate"]),
+                    "closed_trades": st["closed_trades"],
+                    "winning_trades": st["winning_trades"],
+                },
+                "open": PositionSerializer(open_qs, many=True).data,
+                "closed": PositionSerializer(closed_qs, many=True).data,
+            }
+        )
+
+
 class TournamentAdminStandingsView(APIView):
     """Live scoreboard — admin only."""
 

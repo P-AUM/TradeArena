@@ -793,3 +793,27 @@ export async function apiTournamentTrades(
   return res.json();
 }
 
+export type TournamentMyPerformance = {
+  realized_pnl: string;
+  win_rate: string;
+  closed_trades: number;
+  winning_trades: number;
+};
+
+export type TournamentMyResponse = {
+  tournament_id: number;
+  status: TournamentStatus;
+  performance: TournamentMyPerformance;
+  open: Position[];
+  closed: Position[];
+};
+
+/** Entrant-only: own tournament performance + open/closed trades. */
+export async function apiTournamentMe(
+  id: number
+): Promise<TournamentMyResponse> {
+  const res = await authFetch(`${API_BASE}/tournaments/${id}/me/`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+

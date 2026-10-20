@@ -298,8 +298,17 @@ class ClosePositionSerializer(serializers.Serializer):
 
         with transaction.atomic():
             position = Position.objects.select_for_update().get(pk=position.pk)
+            if position.status != Position.Status.OPEN:
+                raise serializers.ValidationError("Position already closed.")
             close_side = "short" if position.side == Position.Side.LONG else "long"
-            exit_price = get_fill_price(position.market, position.symbol, close_side)
+            try:
+                exit_price = get_fill_price(
+                    position.market, position.symbol, close_side
+                )
+            except Exception as exc:
+                raise serializers.ValidationError(
+                    {"detail": f"Could not get exit price: {exc}"}
+                ) from exc
             return close_position_at(position, exit_price)
 
 

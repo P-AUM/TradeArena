@@ -63,20 +63,21 @@ class TraderListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
+        paper = Q(positions__tournament__isnull=True)
         qs = (
             User.objects.filter(role=User.Role.TRADER)
             .annotate(
                 open_count=Count(
                     "positions",
-                    filter=Q(positions__status=Position.Status.OPEN),
+                    filter=paper & Q(positions__status=Position.Status.OPEN),
                 ),
                 closed_count=Count(
                     "positions",
-                    filter=Q(positions__status=Position.Status.CLOSED),
+                    filter=paper & Q(positions__status=Position.Status.CLOSED),
                 ),
                 realized_pnl=Sum(
                     "positions__realized_pnl",
-                    filter=Q(positions__status=Position.Status.CLOSED),
+                    filter=paper & Q(positions__status=Position.Status.CLOSED),
                 ),
             )
             .order_by("username")
@@ -126,40 +127,17 @@ class TraderHistoryView(APIView):
         # Refresh fills/liq for that trader when anyone views them
         try_fill_open_orders(trader)
 
-        # Hide live-tournament positions from public history; show after end
-        from tournaments.models import Tournament
-
-        live_ids = list(
-            Tournament.objects.filter(status=Tournament.Status.LIVE).values_list(
-                "id", flat=True
-            )
-        )
+        # Regular history / stats never include tournament books
         open_qs = Position.objects.filter(
-            user=trader, status=Position.Status.OPEN
+            user=trader,
+            status=Position.Status.OPEN,
+            tournament__isnull=True,
         )
         closed_qs = Position.objects.filter(
-            user=trader, status=Position.Status.CLOSED
+            user=trader,
+            status=Position.Status.CLOSED,
+            tournament__isnull=True,
         )
-        if live_ids:
-            open_qs = open_qs.exclude(tournament_id__in=live_ids)
-            closed_qs = closed_qs.exclude(tournament_id__in=live_ids)
-        # Always exclude other users seeing live tournament books; owner sees own via trade UI
-        if request.user.id != trader.id:
-            open_qs = open_qs.filter(
-                Q(tournament__isnull=True)
-                | Q(tournament__status=Tournament.Status.ENDED)
-            )
-            closed_qs = closed_qs.filter(
-                Q(tournament__isnull=True)
-                | Q(tournament__status=Tournament.Status.ENDED)
-            )
-        else:
-            # Own profile: show normal + ended tournament; hide live tournament here
-            open_qs = open_qs.filter(tournament__isnull=True)
-            closed_qs = closed_qs.filter(
-                Q(tournament__isnull=True)
-                | Q(tournament__status=Tournament.Status.ENDED)
-            )
 
         realized = closed_qs.aggregate(s=Sum("realized_pnl"))["s"] or 0
 

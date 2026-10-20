@@ -167,6 +167,7 @@ export default function TradeTerminal() {
   const [takeProfit, setTakeProfit] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [closingId, setClosingId] = useState<number | null>(null);
   const [live, setLive] = useState(false);
   const [adjustId, setAdjustId] = useState<number | null>(null);
   const [adjustAction, setAdjustAction] = useState<"add" | "trim" | "protect">(
@@ -460,13 +461,19 @@ export default function TradeTerminal() {
   }
 
   async function onClose(id: number) {
-    flushSync(() => setBusy(true));
+    if (closingId != null) return;
+    flushSync(() => {
+      setClosingId(id);
+      setBusy(true);
+      setError(null);
+    });
     try {
       await apiClosePosition(id);
       await refreshAccount();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Close failed");
     } finally {
+      setClosingId(null);
       setBusy(false);
     }
   }
@@ -1069,6 +1076,14 @@ export default function TradeTerminal() {
                 — switch market tab to view / manage them.
               </div>
             ) : null}
+            {error ? (
+              <p
+                className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
+                role="alert"
+              >
+                {error}
+              </p>
+            ) : null}
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px] text-left text-sm">
                 <thead>
@@ -1191,11 +1206,11 @@ export default function TradeTerminal() {
                           </button>
                           <button
                             type="button"
-                            disabled={busy}
+                            disabled={busy || closingId != null}
                             onClick={() => onClose(p.id)}
-                            className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-white/5"
+                            className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-white/5 disabled:opacity-50"
                           >
-                            Close
+                            {closingId === p.id ? "Closing…" : "Close"}
                           </button>
                         </div>
                       </td>

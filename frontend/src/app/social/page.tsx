@@ -9,6 +9,7 @@ import {
   apiFollowing,
   apiMySocial,
   apiUnfollow,
+  type Role,
   type SocialUser,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -30,9 +31,7 @@ function SocialContent() {
   const [following, setFollowing] = useState<SocialUser[]>([]);
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
-  const [profileRole, setProfileRole] = useState<"trader" | "viewer" | null>(
-    null
-  );
+  const [profileRole, setProfileRole] = useState<Role | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyUser, setBusyUser] = useState<string | null>(null);

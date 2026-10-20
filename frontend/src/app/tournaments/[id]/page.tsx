@@ -9,10 +9,12 @@ import PendingButton from "@/components/PendingButton";
 import {
   apiJoinTournament,
   apiTournament,
+  apiTournamentMe,
   apiTournamentStandings,
   apiTournamentTrades,
   type Position,
   type Tournament,
+  type TournamentMyResponse,
   type TournamentStanding,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -35,6 +37,46 @@ function fmtWhen(iso: string) {
   }
 }
 
+function PositionRows({
+  rows,
+  empty,
+}: {
+  rows: Position[];
+  empty: string;
+}) {
+  if (rows.length === 0) {
+    return <p className="mt-2 text-sm text-muted">{empty}</p>;
+  }
+  return (
+    <ul className="mt-3 space-y-2 text-sm">
+      {rows.map((p) => (
+        <li
+          key={p.id}
+          className="flex flex-wrap gap-x-3 border-b border-border/50 py-2 text-muted"
+        >
+          <span className="capitalize text-foreground">{p.side}</span>
+          <span>
+            {p.symbol} ({p.market})
+          </span>
+          <span>{p.leverage}x</span>
+          <span>entry {money(p.entry_price)}</span>
+          {p.status === "open" && p.unrealized_pnl != null ? (
+            <span>uPnL {money(p.unrealized_pnl)}</span>
+          ) : null}
+          {p.status === "closed" && p.realized_pnl != null ? (
+            <span>PnL {money(p.realized_pnl)}</span>
+          ) : null}
+          {p.closed_at ? (
+            <span className="text-xs">{fmtWhen(p.closed_at)}</span>
+          ) : (
+            <span className="text-xs">{fmtWhen(p.opened_at)}</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function TournamentDetailPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -46,6 +88,7 @@ export default function TournamentDetailPage() {
   const [busy, setBusy] = useState(false);
   const [standings, setStandings] = useState<TournamentStanding[] | null>(null);
   const [trades, setTrades] = useState<(Position & { username: string })[]>([]);
+  const [mine, setMine] = useState<TournamentMyResponse | null>(null);
 
   const isAdmin = user?.role === "admin";
   const isTrader = user?.role === "trader";
@@ -56,6 +99,18 @@ export default function TournamentDetailPage() {
     try {
       const data = await apiTournament(id);
       setT(data);
+
+      // Own performance + history: joined trader, while tournament is not ended
+      if (data.i_joined && data.status !== "ended" && user?.role === "trader") {
+        try {
+          setMine(await apiTournamentMe(id));
+        } catch {
+          setMine(null);
+        }
+      } else {
+        setMine(null);
+      }
+
       if (data.status === "ended" || isAdmin) {
         try {
           const tr = await apiTournamentTrades(id);
@@ -69,7 +124,7 @@ export default function TournamentDetailPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     }
-  }, [id, isAdmin]);
+  }, [id, isAdmin, user?.role]);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -79,6 +134,17 @@ export default function TournamentDetailPage() {
     if (!user || !Number.isFinite(id)) return;
     void refresh();
   }, [user, id, refresh]);
+
+  // Refresh own book while live
+  useEffect(() => {
+    if (!t?.i_joined || t.status !== "live" || user?.role !== "trader") return;
+    const timer = setInterval(() => {
+      void apiTournamentMe(id)
+        .then(setMine)
+        .catch(() => {});
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [t?.i_joined, t?.status, id, user?.role]);
 
   async function onJoin() {
     setBusy(true);
@@ -116,6 +182,8 @@ export default function TournamentDetailPage() {
       </>
     );
   }
+
+  const showMyDesk = Boolean(mine && t.i_joined && t.status !== "ended");
 
   return (
     <>
@@ -177,6 +245,59 @@ export default function TournamentDetailPage() {
               </PendingButton>
             ) : null}
           </div>
+
+          {showMyDesk && mine ? (
+            <>
+              <section className="mt-10">
+                <h2 className="text-lg font-semibold">Your performance</h2>
+                <p className="mt-1 text-sm text-muted">
+                  Only you can see this while the tournament is running.
+                </p>
+                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-muted">
+                      Realized PnL
+                    </p>
+                    <p className="mt-1 text-xl font-semibold">
+                      {money(mine.performance.realized_pnl)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-muted">
+                      Win rate
+                    </p>
+                    <p className="mt-1 text-xl font-semibold">
+                      {(Number(mine.performance.win_rate) * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-muted">
+                      Closed trades
+                    </p>
+                    <p className="mt-1 text-xl font-semibold">
+                      {mine.performance.closed_trades}
+                    </p>
+                  </div>
+                </div>
+              </section>
+
+              <section className="mt-10">
+                <h2 className="text-lg font-semibold">Your open positions</h2>
+                <PositionRows
+                  rows={mine.open}
+                  empty="No open tournament positions."
+                />
+              </section>
+
+              <section className="mt-10">
+                <h2 className="text-lg font-semibold">Your closed trades</h2>
+                <PositionRows
+                  rows={mine.closed}
+                  empty="No closed tournament trades yet."
+                />
+              </section>
+            </>
+          ) : null}
 
           {t.status === "ended" && t.leaderboard?.length ? (
             <section className="mt-10">
