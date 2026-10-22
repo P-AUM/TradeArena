@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import PendingButton from "@/components/PendingButton";
 import { useAuth } from "@/lib/auth";
+import { useImmediatePending } from "@/lib/pending";
 
 export default function LoginPage() {
   const { login, user } = useAuth();
@@ -13,7 +15,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const { pending, startPending, stopPending } = useImmediatePending();
 
   useEffect(() => {
     if (user) router.replace("/dashboard");
@@ -21,15 +23,15 @@ export default function LoginPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (pending) return;
     setError(null);
-    setPending(true);
+    startPending();
     try {
       await login({ username, password });
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
-    } finally {
-      setPending(false);
+      stopPending();
     }
   }
 
@@ -50,14 +52,21 @@ export default function LoginPage() {
               Use your username or email + password.
             </p>
 
-            <form onSubmit={onSubmit} className="mt-10 space-y-5">
+            <form
+              method="post"
+              action="#"
+              onSubmit={onSubmit}
+              aria-busy={pending}
+              className={`relative mt-10 space-y-5 ${pending ? "cursor-wait" : ""}`}
+            >
               <label className="block">
                 <span className="eyebrow">Username or email</span>
                 <input
                   required
                   value={username}
+                  disabled={pending}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                   autoComplete="username"
                 />
               </label>
@@ -67,8 +76,9 @@ export default function LoginPage() {
                   required
                   type="password"
                   value={password}
+                  disabled={pending}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                   autoComplete="current-password"
                 />
               </label>
@@ -88,14 +98,18 @@ export default function LoginPage() {
                 </p>
               ) : null}
 
-              <button
-                type="submit"
-                disabled={pending}
-                className="w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
-                style={{ fontFamily: "var(--font-display)" }}
+              <PendingButton
+                pending={pending}
+                pendingLabel="Signing in…"
+                className="bg-foreground text-black"
               >
-                {pending ? "Signing in…" : "Log in"}
-              </button>
+                Log in
+              </PendingButton>
+              {pending ? (
+                <p className="text-center text-xs text-muted" aria-live="assertive">
+                  Please wait…
+                </p>
+              ) : null}
             </form>
 
             <p className="mt-8 text-sm text-muted">

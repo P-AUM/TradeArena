@@ -1,26 +1,60 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Logo from "./Logo";
 import NotificationBell from "./NotificationBell";
 import { useAuth } from "@/lib/auth";
 
 function prefetchTvScript() {
   if (typeof document === "undefined") return;
-  if (document.getElementById("tradingview-widget-script")) return;
+  if (document.getElementById("tradingview-preload")) return;
   const link = document.createElement("link");
   link.rel = "preload";
   link.as = "script";
-  link.href = "https://s3.tradingview.com/tv.js";
+  link.href =
+    "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
   link.id = "tradingview-preload";
   document.head.appendChild(link);
+}
+
+function isNavActive(
+  href: string,
+  pathname: string,
+  hash: string,
+  username?: string
+) {
+  if (href.includes("#")) {
+    const fragment = href.split("#")[1] ?? "";
+    return pathname === "/" && hash === fragment;
+  }
+  if (href === "/traders") {
+    if (pathname === "/traders") return true;
+    if (
+      username &&
+      pathname.startsWith("/traders/") &&
+      pathname !== `/traders/${encodeURIComponent(username)}`
+    ) {
+      return true;
+    }
+    return false;
+  }
+  return pathname === href;
 }
 
 export default function Navbar() {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const [hash, setHash] = useState("");
+
+  useEffect(() => {
+    const read = () => setHash(window.location.hash.replace(/^#/, ""));
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
+  }, [pathname]);
 
   const publicLinks = [
     { label: "How it works", href: "/#how-it-works" },
@@ -32,17 +66,26 @@ export default function Navbar() {
       ? [
           { label: "Dashboard", href: "/dashboard" },
           { label: "Trade", href: "/trade" },
+          { label: "Tournaments", href: "/tournaments" },
           { label: "History", href: `/traders/${encodeURIComponent(user.username)}` },
           { label: "Leaderboard", href: "/leaderboard" },
           { label: "Following", href: "/social" },
           { label: "Traders", href: "/traders" },
         ]
-      : [
-          { label: "Dashboard", href: "/dashboard" },
-          { label: "Leaderboard", href: "/leaderboard" },
-          { label: "Following", href: "/social" },
-          { label: "Traders", href: "/traders" },
-        ];
+      : user?.role === "admin"
+        ? [
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Tournaments", href: "/tournaments" },
+            { label: "Leaderboard", href: "/leaderboard" },
+            { label: "Traders", href: "/traders" },
+          ]
+        : [
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Tournaments", href: "/tournaments" },
+            { label: "Leaderboard", href: "/leaderboard" },
+            { label: "Following", href: "/social" },
+            { label: "Traders", href: "/traders" },
+          ];
 
   // Warm route chunks so History → Trade feels instant
   useEffect(() => {
@@ -62,19 +105,37 @@ export default function Navbar() {
             <Logo />
           </Link>
 
-          <ul className="hidden md:flex items-center gap-7 text-sm text-muted">
-            {(user ? authedLinks : publicLinks).map((link) => (
-              <li key={link.label}>
-                <Link
-                  href={link.href}
-                  prefetch
-                  onMouseEnter={() => router.prefetch(link.href)}
-                  className="transition-colors hover:text-foreground"
-                >
-                  {link.label}
-                </Link>
-              </li>
-            ))}
+          <ul className="hidden md:flex items-center gap-1.5 text-sm text-muted">
+            {(user ? authedLinks : publicLinks).map((link) => {
+              const active = isNavActive(
+                link.href,
+                pathname,
+                hash,
+                user?.username
+              );
+              return (
+                <li key={link.label}>
+                  <Link
+                    href={link.href}
+                    prefetch
+                    aria-current={active ? "page" : undefined}
+                    onMouseEnter={() => router.prefetch(link.href)}
+                    onClick={() => {
+                      if (link.href.includes("#")) {
+                        setHash(link.href.split("#")[1] ?? "");
+                      }
+                    }}
+                    className={
+                      active
+                        ? "rounded-full bg-foreground px-3 py-1.5 font-semibold text-black"
+                        : "rounded-full px-3 py-1.5 transition-colors hover:bg-white/5 hover:text-foreground"
+                    }
+                  >
+                    {link.label}
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
 
           <div className="flex items-center gap-3">
@@ -101,13 +162,23 @@ export default function Navbar() {
               <>
                 <Link
                   href="/login"
-                  className="hidden sm:inline text-sm text-muted transition-colors hover:text-foreground"
+                  aria-current={pathname === "/login" ? "page" : undefined}
+                  className={
+                    pathname === "/login"
+                      ? "hidden sm:inline text-sm font-semibold text-foreground"
+                      : "hidden sm:inline text-sm text-muted transition-colors hover:text-foreground"
+                  }
                 >
                   Log in
                 </Link>
                 <Link
                   href="/signup"
-                  className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90"
+                  aria-current={pathname === "/signup" ? "page" : undefined}
+                  className={
+                    pathname === "/signup"
+                      ? "rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-black ring-2 ring-accent/70"
+                      : "rounded-full bg-foreground px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90"
+                  }
                   style={{ fontFamily: "var(--font-display)" }}
                 >
                   Enter Arena

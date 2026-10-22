@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from accounts.models import User
 from accounts import social as social_helpers
 from . import binance as bn
-from .leaderboard import VALID_METRICS, VALID_PERIODS, build_leaderboard
+from .leaderboard import VALID_MARKETS, VALID_PERIODS, build_leaderboard
 from .models import PaperOrder, Position
 from .prices import get_all_quotes
 from .serializers import (
@@ -32,21 +32,23 @@ class IsTrader(permissions.BasePermission):
 
 
 class LeaderboardView(APIView):
-    """Rank traders by PnL, ROI, or win rate for daily / weekly / all-time."""
+    """Spot + Futures boards ranked by ROI, then win rate (paper trades only)."""
 
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
         period = (request.query_params.get("period") or "all_time").strip().lower()
-        metric = (request.query_params.get("metric") or "pnl").strip().lower()
+        market = (request.query_params.get("market") or "").strip().lower() or None
         if period not in VALID_PERIODS:
             return Response(
                 {"detail": f"Invalid period. Use one of: {', '.join(VALID_PERIODS)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if metric not in VALID_METRICS:
+        if market is not None and market not in VALID_MARKETS:
             return Response(
-                {"detail": f"Invalid metric. Use one of: {', '.join(VALID_METRICS)}"},
+                {
+                    "detail": f"Invalid market. Use one of: {', '.join(VALID_MARKETS)}"
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
@@ -54,7 +56,9 @@ class LeaderboardView(APIView):
         except ValueError:
             limit = 100
         limit = max(1, min(limit, 200))
-        return Response(build_leaderboard(period=period, metric=metric, limit=limit))
+        return Response(
+            build_leaderboard(period=period, limit=limit, market=market)
+        )
 
 
 class TraderListView(APIView):
@@ -63,20 +67,21 @@ class TraderListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
+        paper = Q(positions__tournament__isnull=True)
         qs = (
             User.objects.filter(role=User.Role.TRADER)
             .annotate(
                 open_count=Count(
                     "positions",
-                    filter=Q(positions__status=Position.Status.OPEN),
+                    filter=paper & Q(positions__status=Position.Status.OPEN),
                 ),
                 closed_count=Count(
                     "positions",
-                    filter=Q(positions__status=Position.Status.CLOSED),
+                    filter=paper & Q(positions__status=Position.Status.CLOSED),
                 ),
                 realized_pnl=Sum(
                     "positions__realized_pnl",
-                    filter=Q(positions__status=Position.Status.CLOSED),
+                    filter=paper & Q(positions__status=Position.Status.CLOSED),
                 ),
             )
             .order_by("username")
@@ -115,15 +120,29 @@ class TraderHistoryView(APIView):
                 {"detail": "Trader not found."}, status=status.HTTP_404_NOT_FOUND
             )
 
+        from tournaments.services import privacy_blocks_trader_view
+
+        blocked = privacy_blocks_trader_view(
+            viewer=request.user, target_trader=trader
+        )
+        if blocked:
+            return Response({"detail": blocked}, status=status.HTTP_403_FORBIDDEN)
+
         # Refresh fills/liq for that trader when anyone views them
         try_fill_open_orders(trader)
 
+        # Regular history / stats never include tournament books
         open_qs = Position.objects.filter(
-            user=trader, status=Position.Status.OPEN
+            user=trader,
+            status=Position.Status.OPEN,
+            tournament__isnull=True,
         )
         closed_qs = Position.objects.filter(
-            user=trader, status=Position.Status.CLOSED
+            user=trader,
+            status=Position.Status.CLOSED,
+            tournament__isnull=True,
         )
+
         realized = closed_qs.aggregate(s=Sum("realized_pnl"))["s"] or 0
 
         return Response(
@@ -155,7 +174,23 @@ class WalletListView(APIView):
                 {"detail": "Wallets are for traders only."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        try_fill_open_orders(request.user)
+        tid = request.query_params.get("tournament_id")
+        if tid:
+            from tournaments.models import TournamentEntry, TournamentWallet
+            from tournaments.serializers import TournamentWalletSerializer
+
+            if not TournamentEntry.objects.filter(
+                tournament_id=tid, user=request.user, paid=True
+            ).exists():
+                return Response(
+                    {"detail": "Not an entrant."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            wallets = TournamentWallet.objects.filter(
+                tournament_id=tid, user=request.user
+            )
+            return Response(TournamentWalletSerializer(wallets, many=True).data)
+        # SL/TP/limit fills run on positions GET (avoid triple-check every poll)
         wallets = ensure_wallets(request.user)
         return Response(WalletSerializer(wallets, many=True).data)
 
@@ -237,9 +272,14 @@ class OrderListCreateView(APIView):
 
     def get(self, request):
         ensure_wallets(request.user)
-        try_fill_open_orders(request.user)
+        # Fills/SL checked on positions GET
         status_filter = request.query_params.get("status", "open")
+        tid = request.query_params.get("tournament_id")
         qs = PaperOrder.objects.filter(user=request.user)
+        if tid:
+            qs = qs.filter(tournament_id=tid)
+        else:
+            qs = qs.filter(tournament__isnull=True)
         if status_filter in ("open", "filled", "cancelled"):
             qs = qs.filter(status=status_filter)
         return Response(PaperOrderSerializer(qs, many=True).data)
@@ -276,7 +316,12 @@ class PositionListCreateView(APIView):
         ensure_wallets(request.user)
         try_fill_open_orders(request.user)
         status_filter = request.query_params.get("status", "open")
+        tid = request.query_params.get("tournament_id")
         qs = Position.objects.filter(user=request.user)
+        if tid:
+            qs = qs.filter(tournament_id=tid)
+        else:
+            qs = qs.filter(tournament__isnull=True)
         if status_filter in ("open", "closed"):
             qs = qs.filter(status=status_filter)
         return Response(PositionSerializer(qs, many=True).data)

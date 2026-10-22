@@ -100,6 +100,12 @@ export default function TraderDashboard({ user }: { user: AuthUser }) {
           Trade terminal
         </Link>
         <Link
+          href="/tournaments"
+          className="text-sm text-muted transition-colors hover:text-foreground"
+        >
+          Tournaments
+        </Link>
+        <Link
           href={`/traders/${encodeURIComponent(user.username)}`}
           className="text-sm text-muted transition-colors hover:text-foreground"
         >

@@ -5,9 +5,5 @@ django-cors-headers>=4.3
 python-dotenv>=1.0
 httpx>=0.27
 websockets>=12.0
-google-api-python-client>=2.100
-google-auth-httplib2>=0.2
-google-auth-oauthlib>=1.2
-msal>=1.28
 # Optional Postgres later:
 # psycopg[binary]>=3.1

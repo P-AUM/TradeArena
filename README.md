@@ -25,7 +25,7 @@ Paper-trading social arena for crypto (and forex wallets). Traders compete with 
 - Leaderboards (PnL, ROI, win rate — daily / weekly / all-time)
 - Follow / following
 - In-app alerts when followed traders open or close
-- Password reset OTP via **Gmail API** (preferred) or Resend fallback
+- Password reset OTP via **SMTP**
 
 ---
 
@@ -85,26 +85,20 @@ DEFAULT_FROM_EMAIL=TradeArena <you@gmail.com>
 EMAIL_SHOW_DEV_OTP=false
 ```
 
-**OTP email (optional but recommended)** — Gmail API:
-
-1. Enable Gmail API in Google Cloud  
-2. OAuth consent (External + Testing) + add your sender as a **test user**  
-3. Create a **Desktop** OAuth client  
-4. Set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` in `.env`  
-5. Run:
-
-```bash
-python manage.py gmail_oauth_setup
-```
-
-6. Paste `GMAIL_REFRESH_TOKEN` into `.env` and set:
+**OTP email (optional but recommended)** — SMTP only:
 
 ```env
-GMAIL_SENDER=TradeArena <your-gmail@gmail.com>
-DEFAULT_FROM_EMAIL=TradeArena <your-gmail@gmail.com>
+EMAIL_HOST=in-v3.mailjet.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=true
+EMAIL_HOST_USER=your-smtp-username
+EMAIL_HOST_PASSWORD=your-smtp-password
+DEFAULT_FROM_EMAIL=TradeArena <your-verified-email@example.com>
 ```
 
-Without mail configured, forgot-password may show an on-screen OTP when `DJANGO_DEBUG=true`.
+`EMAIL_HOST_USER` is only the SMTP login. The inbox **From** line is `DEFAULT_FROM_EMAIL`. That address must be allowed by the SMTP host (verified sender / domain). Gmail SMTP (`smtp.gmail.com`) always shows the Gmail login instead, unless `DEFAULT_FROM_EMAIL` is that Gmail address or a verified “Send mail as” alias.
+
+Without SMTP configured, forgot-password may show an on-screen OTP when `DJANGO_DEBUG=true`.
 
 ### Database
 
@@ -181,5 +175,5 @@ TradeArena/
 ## Notes
 
 - Paper trading only — prices from Binance public APIs; fills are simulated.  
-- Never commit `backend/.env` (Gmail / Resend keys).  
+- Never commit `backend/.env` (SMTP credentials).  
 - After pulling code changes: restart Django; run `migrate` if migrations were added; run `npm install` if frontend deps changed.

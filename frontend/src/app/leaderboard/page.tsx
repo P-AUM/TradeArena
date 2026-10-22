@@ -7,7 +7,6 @@ import Navbar from "@/components/Navbar";
 import {
   apiLeaderboard,
   type LeaderboardEntry,
-  type LeaderboardMetric,
   type LeaderboardPeriod,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -16,12 +15,6 @@ const PERIODS: { id: LeaderboardPeriod; label: string }[] = [
   { id: "daily", label: "Daily" },
   { id: "weekly", label: "Weekly" },
   { id: "all_time", label: "All-time" },
-];
-
-const METRICS: { id: LeaderboardMetric; label: string }[] = [
-  { id: "pnl", label: "PnL" },
-  { id: "roi", label: "ROI" },
-  { id: "win_rate", label: "Win rate" },
 ];
 
 function money(n: string | number) {
@@ -79,16 +72,128 @@ function ToggleGroup<T extends string>({
   );
 }
 
-function colClass(active: boolean) {
-  return active ? "text-accent" : "";
+function BoardTable({
+  title,
+  subtitle,
+  rows,
+  loading,
+  you,
+}: {
+  title: string;
+  subtitle: string;
+  rows: LeaderboardEntry[];
+  loading: boolean;
+  you: string;
+}) {
+  return (
+    <section className="mt-10">
+      <h2 className="text-lg font-semibold">{title}</h2>
+      <p className="mt-1 text-sm text-muted">{subtitle}</p>
+      <div className="mt-4 overflow-x-auto border-y border-border">
+        <table className="w-full min-w-[640px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-border text-muted">
+              <th className="eyebrow py-4 pr-3 font-normal">#</th>
+              <th className="eyebrow py-4 pr-3 font-normal">Trader</th>
+              <th className="eyebrow py-4 pr-3 font-normal text-accent">ROI</th>
+              <th className="eyebrow py-4 pr-3 font-normal">Win rate</th>
+              <th className="eyebrow py-4 pr-3 font-normal">Closed</th>
+              <th className="eyebrow py-4 pr-3 font-normal">PnL</th>
+              <th className="eyebrow py-4 font-normal" />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="py-8 text-muted">
+                  Loading…
+                </td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="py-8 text-muted">
+                  No closed trades on this board yet.
+                </td>
+              </tr>
+            ) : (
+              rows.map((row) => {
+                const isYou = row.username === you;
+                return (
+                  <tr
+                    key={`${title}-${row.id}`}
+                    className={`border-b border-border/60 ${
+                      isYou ? "bg-accent/[0.04]" : ""
+                    }`}
+                  >
+                    <td
+                      className="py-4 pr-3 text-muted"
+                      style={{
+                        fontFamily: "var(--font-display)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {row.rank}
+                    </td>
+                    <td
+                      className="py-4 pr-3"
+                      style={{
+                        fontFamily: "var(--font-display)",
+                        fontWeight: 600,
+                      }}
+                    >
+                      @{row.username}
+                      {isYou ? (
+                        <span className="ml-2 text-xs text-accent">you</span>
+                      ) : null}
+                    </td>
+                    <td
+                      className={`py-4 pr-3 font-semibold ${
+                        Number(row.roi_pct) >= 0 ? "text-accent" : "text-danger"
+                      }`}
+                    >
+                      {pct(row.roi_pct)}
+                    </td>
+                    <td className="py-4 pr-3 text-foreground">
+                      {pct(row.win_rate_pct)}
+                      <span className="ml-1.5 text-xs text-muted">
+                        {row.wins}W/{row.losses}L
+                      </span>
+                    </td>
+                    <td className="py-4 pr-3 text-muted">{row.closed_trades}</td>
+                    <td
+                      className={`py-4 pr-3 ${
+                        Number(row.realized_pnl) >= 0
+                          ? "text-accent"
+                          : "text-danger"
+                      }`}
+                    >
+                      {money(row.realized_pnl)}
+                    </td>
+                    <td className="py-4 text-right">
+                      <Link
+                        href={`/traders/${encodeURIComponent(row.username)}`}
+                        className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-white/5"
+                      >
+                        View
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }
 
 export default function LeaderboardPage() {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [period, setPeriod] = useState<LeaderboardPeriod>("all_time");
-  const [metric, setMetric] = useState<LeaderboardMetric>("pnl");
-  const [rows, setRows] = useState<LeaderboardEntry[]>([]);
+  const [spot, setSpot] = useState<LeaderboardEntry[]>([]);
+  const [futures, setFutures] = useState<LeaderboardEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -101,9 +206,11 @@ export default function LeaderboardPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    apiLeaderboard({ period, metric })
+    apiLeaderboard({ period })
       .then((data) => {
-        if (!cancelled) setRows(data.results);
+        if (cancelled) return;
+        setSpot(data.boards?.spot ?? []);
+        setFutures(data.boards?.futures ?? []);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -116,7 +223,7 @@ export default function LeaderboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [user, period, metric]);
+  }, [user, period]);
 
   if (authLoading || !user) {
     return (
@@ -127,7 +234,7 @@ export default function LeaderboardPage() {
     );
   }
 
-return (
+  return (
     <>
       <Navbar />
       <main className="min-h-screen bg-background pt-28 pb-20">
@@ -136,23 +243,18 @@ return (
           <h1 className="statement mt-4 text-5xl uppercase md:text-6xl">
             Leaderboard
           </h1>
-          <p className="thin mt-4 max-w-xl text-muted">
-            Rank by realized PnL, ROI on starting capital, or win rate. Daily and
-            weekly use closed trades since UTC midnight / Monday.
+          <p className="thin mt-4 max-w-2xl text-muted">
+            Separate Spot and Futures boards. Ranked by ROI on that market&apos;s
+            starting capital, then win rate, then closed trades / PnL. PnL is
+            shown for context. Tournament trades are excluded.
           </p>
 
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="mt-8">
             <ToggleGroup
               options={PERIODS}
               value={period}
               onChange={setPeriod}
               ariaLabel="Time period"
-            />
-            <ToggleGroup
-              options={METRICS}
-              value={metric}
-              onChange={setMetric}
-              ariaLabel="Ranking metric"
             />
           </div>
 
@@ -162,123 +264,21 @@ return (
             </p>
           ) : null}
 
-          <div className="mt-10 overflow-x-auto border-y border-border">
-            <table className="w-full min-w-[640px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-border text-muted">
-                  <th className="eyebrow py-4 pr-3 font-normal">#</th>
-                  <th className="eyebrow py-4 pr-3 font-normal">Trader</th>
-                  <th
-                    className={`eyebrow py-4 pr-3 font-normal ${colClass(metric === "pnl")}`}
-                  >
-                    PnL
-                  </th>
-                  <th
-                    className={`eyebrow py-4 pr-3 font-normal ${colClass(metric === "roi")}`}
-                  >
-                    ROI
-                  </th>
-                  <th
-                    className={`eyebrow py-4 pr-3 font-normal ${colClass(metric === "win_rate")}`}
-                  >
-                    Win rate
-                  </th>
-                  <th className="eyebrow py-4 pr-3 font-normal">Closed</th>
-                  <th className="eyebrow py-4 font-normal" />
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-muted">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-muted">
-                      No traders on the board yet.
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map((row) => {
-                    const isYou = row.username === user.username;
-                    return (
-                      <tr
-                        key={row.id}
-                        className={`border-b border-border/60 ${
-                          isYou ? "bg-accent/[0.04]" : ""
-                        }`}
-                      >
-                        <td
-                          className="py-4 pr-3 text-muted"
-                          style={{
-                            fontFamily: "var(--font-display)",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {row.rank}
-                        </td>
-                        <td
-                          className="py-4 pr-3"
-                          style={{
-                            fontFamily: "var(--font-display)",
-                            fontWeight: 600,
-                          }}
-                        >
-                          @{row.username}
-                          {isYou ? (
-                            <span className="ml-2 text-xs text-accent">you</span>
-                          ) : null}
-                        </td>
-                        <td
-                          className={`py-4 pr-3 ${
-                            Number(row.realized_pnl) >= 0
-                              ? "text-accent"
-                              : "text-danger"
-                          } ${metric === "pnl" ? "font-semibold" : ""}`}
-                        >
-                          {money(row.realized_pnl)}
-                        </td>
-                        <td
-                          className={`py-4 pr-3 ${
-                            Number(row.roi_pct) >= 0
-                              ? "text-accent"
-                              : "text-danger"
-                          } ${metric === "roi" ? "font-semibold" : ""}`}
-                        >
-                          {pct(row.roi_pct)}
-                        </td>
-                        <td
-                          className={`py-4 pr-3 ${
-                            metric === "win_rate"
-                              ? "font-semibold text-foreground"
-                              : "text-muted"
-                          }`}
-                        >
-                          {pct(row.win_rate_pct)}
-                          <span className="ml-1.5 text-xs text-muted">
-                            {row.wins}W/{row.losses}L
-                          </span>
-                        </td>
-                        <td className="py-4 pr-3 text-muted">
-                          {row.closed_trades}
-                        </td>
-                        <td className="py-4 text-right">
-                          <Link
-                            href={`/traders/${encodeURIComponent(row.username)}`}
-                            className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-white/5"
-                          >
-                            View
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          <BoardTable
+            title="Spot leaders"
+            subtitle="Spot only · no leverage · ROI first, then win rate"
+            rows={spot}
+            loading={loading}
+            you={user.username}
+          />
+
+          <BoardTable
+            title="Futures leaders"
+            subtitle="Futures only · leveraged book · ROI first, then win rate"
+            rows={futures}
+            loading={loading}
+            you={user.username}
+          />
         </div>
       </main>
     </>

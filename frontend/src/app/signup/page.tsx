@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import PendingButton from "@/components/PendingButton";
 import { useAuth } from "@/lib/auth";
+import { useImmediatePending } from "@/lib/pending";
 import type { Role } from "@/lib/api";
 
 export default function SignupPage() {
@@ -16,7 +18,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("trader");
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const { pending, startPending, stopPending } = useImmediatePending();
 
   useEffect(() => {
     if (user) router.replace("/dashboard");
@@ -24,15 +26,15 @@ export default function SignupPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (pending) return;
     setError(null);
-    setPending(true);
+    startPending();
     try {
       await signup({ username, email, password, role });
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
-    } finally {
-      setPending(false);
+      stopPending();
     }
   }
 
@@ -53,14 +55,21 @@ export default function SignupPage() {
               Email + password for now. Role is locked after you choose.
             </p>
 
-            <form onSubmit={onSubmit} className="mt-10 space-y-5">
+            <form
+              method="post"
+              action="#"
+              onSubmit={onSubmit}
+              aria-busy={pending}
+              className={`relative mt-10 space-y-5 ${pending ? "cursor-wait" : ""}`}
+            >
               <label className="block">
                 <span className="eyebrow">Username</span>
                 <input
                   required
                   value={username}
+                  disabled={pending}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                   autoComplete="username"
                 />
               </label>
@@ -70,8 +79,9 @@ export default function SignupPage() {
                   required
                   type="email"
                   value={email}
+                  disabled={pending}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                   autoComplete="email"
                 />
               </label>
@@ -82,8 +92,9 @@ export default function SignupPage() {
                   type="password"
                   minLength={8}
                   value={password}
+                  disabled={pending}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50"
+                  className="mt-2 w-full rounded-lg border border-border bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-accent/50 disabled:opacity-60"
                   autoComplete="new-password"
                 />
               </label>
@@ -101,7 +112,8 @@ export default function SignupPage() {
                       key={opt.id}
                       type="button"
                       onClick={() => setRole(opt.id)}
-                      className={`rounded-lg border px-4 py-3 text-sm transition-colors ${
+                      disabled={pending}
+                      className={`rounded-lg border px-4 py-3 text-sm transition-colors disabled:opacity-60 ${
                         role === opt.id
                           ? "border-accent bg-accent/10 text-foreground"
                           : "border-border text-muted hover:bg-white/5"
@@ -120,14 +132,18 @@ export default function SignupPage() {
                 </p>
               ) : null}
 
-              <button
-                type="submit"
-                disabled={pending}
-                className="w-full rounded-full bg-accent px-6 py-3.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
-                style={{ fontFamily: "var(--font-display)" }}
+              <PendingButton
+                pending={pending}
+                pendingLabel="Creating account…"
+                className="bg-accent text-black"
               >
-                {pending ? "Creating…" : "Create account"}
-              </button>
+                Create account
+              </PendingButton>
+              {pending ? (
+                <p className="text-center text-xs text-muted" aria-live="assertive">
+                  Please wait…
+                </p>
+              ) : null}
             </form>
 
             <p className="mt-8 text-sm text-muted">

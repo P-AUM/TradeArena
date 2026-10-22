@@ -1,10 +1,21 @@
 "use client";
 
-import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import PendingButton from "@/components/PendingButton";
 
 const TradingViewChart = dynamic(() => import("@/components/TradingViewChart"), {
   ssr: false,
@@ -83,6 +94,19 @@ function isValidPrice(raw: unknown): raw is string | number {
   return Number.isFinite(n) && n > 0;
 }
 
+/** Always keep fraction digits so 123.00 and 123.34 occupy the same width. */
+function formatLastPrice(raw: string | undefined | null): string {
+  if (!isValidPrice(raw)) return "—";
+  const v = Number(raw);
+  const frac = String(raw).split(".")[1] ?? "";
+  const significant = frac.replace(/0+$/, "").length;
+  const decimals = Math.max(2, Math.min(8, significant || 2));
+  return v.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
 function wsPayload(msg: Record<string, unknown>): Record<string, unknown> {
   // Combined streams: { stream, data: { ... } }
   const data = msg.data;
@@ -114,6 +138,11 @@ function liveUpnlPct(p: Position, upnl: number | null) {
 export default function TradeTerminal() {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const tournamentParam = searchParams.get("tournament");
+  const tournamentId = tournamentParam ? Number(tournamentParam) : null;
+  const inTournament =
+    tournamentId != null && Number.isFinite(tournamentId) && tournamentId > 0;
 
   const [market, setMarket] = useState<BookSide>("spot");
   const [symbol, setSymbol] = useState("BTCUSDT");
@@ -138,6 +167,7 @@ export default function TradeTerminal() {
   const [takeProfit, setTakeProfit] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [closingId, setClosingId] = useState<number | null>(null);
   const [live, setLive] = useState(false);
   const [adjustId, setAdjustId] = useState<number | null>(null);
   const [adjustAction, setAdjustAction] = useState<"add" | "trim" | "protect">(
@@ -149,6 +179,12 @@ export default function TradeTerminal() {
 
   const depthWs = useRef<WebSocket | null>(null);
   const tradeWs = useRef<WebSocket | null>(null);
+  const ticketRef = useRef<HTMLElement | null>(null);
+  const positionsRef = useRef<Position[]>([]);
+  const protectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastProtectCheckRef = useRef(0);
+  /** Chart body height — synced to order ticket so bottoms align */
+  const [chartHeight, setChartHeight] = useState(560);
 
   useEffect(() => {
     if (!authLoading && (!user || user.role !== "trader")) {
@@ -161,7 +197,46 @@ export default function TradeTerminal() {
     [wallets, market]
   );
 
-  const effectiveLeverage = market === "spot" ? 1 : leverage;
+  /** One open position per market+symbol — same side merges, opposite blocked. */
+  const openOnSymbol = useMemo(
+    () =>
+      positions.find((p) => p.market === market && p.symbol === symbol) ?? null,
+    [positions, market, symbol]
+  );
+
+  useEffect(() => {
+    positionsRef.current = positions;
+  }, [positions]);
+
+  useEffect(() => {
+    if (!openOnSymbol) return;
+    setSide(openOnSymbol.side === "short" ? "short" : "long");
+    if (market !== "spot") {
+      setLeverage(Number(openOnSymbol.leverage) || 1);
+    }
+  }, [openOnSymbol?.id, openOnSymbol?.side, openOnSymbol?.leverage, market]);
+
+  useLayoutEffect(() => {
+    const el = ticketRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const CHART_TITLE_BAR = 52;
+    const sync = () => {
+      const ticketH = Math.round(el.getBoundingClientRect().height);
+      const next = Math.max(480, ticketH - CHART_TITLE_BAR);
+      setChartHeight((prev) => (Math.abs(prev - next) < 8 ? prev : next));
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [openOnSymbol?.id, orderType, market]);
+
+  const effectiveLeverage =
+    market === "spot"
+      ? 1
+      : openOnSymbol
+        ? Number(openOnSymbol.leverage) || 1
+        : leverage;
   const marginRequired = useMemo(() => {
     const n = Number(notional);
     if (!n || !effectiveLeverage) return 0;
@@ -184,18 +259,40 @@ export default function TradeTerminal() {
 
   const refreshAccount = useCallback(async () => {
     try {
-      const [w, p, o] = await Promise.all([
-        apiWallets(),
-        apiPositions("open"),
-        apiOrders("open"),
+      const tid = inTournament ? tournamentId : null;
+      // Positions first — backend runs SL/TP/limit/liquidation checks here
+      const p = await apiPositions("open", tid);
+      setPositions(p);
+      positionsRef.current = p;
+      const [w, o] = await Promise.all([
+        apiWallets(tid),
+        apiOrders("open", tid),
       ]);
       setWallets(w);
-      setPositions(p);
       setOpenOrders(o);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Account load failed");
     }
-  }, []);
+  }, [inTournament, tournamentId]);
+
+  /** Near-instant SL/TP check when live price crosses (throttled). */
+  const scheduleProtectCheck = useCallback(() => {
+    const now = Date.now();
+    const minGap = 350;
+    const run = () => {
+      lastProtectCheckRef.current = Date.now();
+      void refreshAccount();
+    };
+    if (now - lastProtectCheckRef.current >= minGap) {
+      run();
+      return;
+    }
+    if (protectTimerRef.current) return;
+    protectTimerRef.current = setTimeout(() => {
+      protectTimerRef.current = null;
+      run();
+    }, minGap - (now - lastProtectCheckRef.current));
+  }, [refreshAccount]);
 
   const loadMarketData = useCallback(async () => {
     setError(null);
@@ -255,6 +352,7 @@ export default function TradeTerminal() {
           const price = msg.p;
           if (!isValidPrice(price)) return;
 
+          const px = Number(price);
           const row: RecentTrade = {
             id: Number(msg.t ?? msg.a ?? Date.now()),
             price: String(price),
@@ -266,6 +364,26 @@ export default function TradeTerminal() {
           setTicker((prev) =>
             prev ? { ...prev, lastPrice: String(price) } : prev
           );
+
+          // If live trade price crosses SL/TP on this symbol, check immediately
+          for (const p of positionsRef.current) {
+            if (p.market !== market || p.symbol !== symbol) continue;
+            const sl = p.stop_loss != null ? Number(p.stop_loss) : null;
+            const tp = p.take_profit != null ? Number(p.take_profit) : null;
+            if (sl == null && tp == null) continue;
+            let hit = false;
+            if (p.side === "long") {
+              if (sl != null && px <= sl) hit = true;
+              if (tp != null && px >= tp) hit = true;
+            } else {
+              if (sl != null && px >= sl) hit = true;
+              if (tp != null && px <= tp) hit = true;
+            }
+            if (hit) {
+              scheduleProtectCheck();
+              break;
+            }
+          }
         } catch {
           /* ignore */
         }
@@ -273,7 +391,7 @@ export default function TradeTerminal() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Market data failed");
     }
-  }, [market, symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [market, symbol, scheduleProtectCheck]);
 
   useEffect(() => {
     if (user?.role === "trader") {
@@ -283,17 +401,23 @@ export default function TradeTerminal() {
     return () => {
       depthWs.current?.close();
       tradeWs.current?.close();
+      if (protectTimerRef.current) clearTimeout(protectTimerRef.current);
     };
   }, [user, refreshAccount, loadMarketData]);
 
-  // Poll account so resting limit orders can fill
+  // Fast poll when positions/orders need watching; slow when idle
   useEffect(() => {
     if (user?.role !== "trader") return;
+    const needsFast =
+      positions.length > 0 ||
+      openOrders.length > 0 ||
+      positions.some((p) => p.stop_loss != null || p.take_profit != null);
+    const ms = needsFast ? 1_000 : 8_000;
     const id = setInterval(() => {
-      refreshAccount();
-    }, 8_000);
+      void refreshAccount();
+    }, ms);
     return () => clearInterval(id);
-  }, [user, refreshAccount]);
+  }, [user, refreshAccount, positions, openOrders]);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -310,7 +434,7 @@ export default function TradeTerminal() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       const sl = stopLoss.trim() ? Number(stopLoss) : null;
@@ -326,6 +450,7 @@ export default function TradeTerminal() {
           orderType === "limit" ? Number(limitPrice) : undefined,
         stop_loss: sl && sl > 0 ? sl : null,
         take_profit: tp && tp > 0 ? tp : null,
+        tournament_id: inTournament ? tournamentId : null,
       });
       await refreshAccount();
     } catch (err) {
@@ -336,20 +461,26 @@ export default function TradeTerminal() {
   }
 
   async function onClose(id: number) {
-    setBusy(true);
+    if (closingId != null) return;
+    flushSync(() => {
+      setClosingId(id);
+      setBusy(true);
+      setError(null);
+    });
     try {
       await apiClosePosition(id);
       await refreshAccount();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Close failed");
     } finally {
+      setClosingId(null);
       setBusy(false);
     }
   }
 
   async function onProtectSave() {
     if (adjustId == null) return;
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       const sl = editSl.trim() ? Number(editSl) : null;
@@ -369,7 +500,7 @@ export default function TradeTerminal() {
 
   async function onAdjust() {
     if (adjustId == null || adjustAction === "protect") return;
-    setBusy(true);
+    flushSync(() => setBusy(true));
     setError(null);
     try {
       await apiAdjustPosition(adjustId, {
@@ -386,7 +517,7 @@ export default function TradeTerminal() {
   }
 
   async function onCancelOrder(id: number) {
-    setBusy(true);
+    flushSync(() => setBusy(true));
     try {
       await apiCancelOrder(id);
       await refreshAccount();
@@ -417,6 +548,23 @@ export default function TradeTerminal() {
       <Navbar />
       <main className="relative min-h-screen overflow-x-hidden bg-background pt-24 pb-28">
         <div className="mx-auto max-w-[1600px] px-4">
+          {inTournament ? (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3 text-sm">
+              <p>
+                <span className="font-semibold text-accent">Tournament mode</span>
+                <span className="text-muted">
+                  {" "}
+                  · isolated $10k wallets · crypto spot &amp; futures only
+                </span>
+              </p>
+              <Link
+                href="/tournaments"
+                className="text-muted underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Back to tournaments
+              </Link>
+            </div>
+          ) : null}
           {/* Top bar */}
           <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
             <div className="flex rounded-full border border-border p-1 text-sm">
@@ -477,8 +625,8 @@ export default function TradeTerminal() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-baseline gap-4">
-              <div>
+            <div className="flex flex-nowrap items-center gap-5">
+              <div className="shrink-0">
                 <p
                   className="text-2xl md:text-3xl"
                   style={{ fontFamily: "var(--font-display)", fontWeight: 700 }}
@@ -487,22 +635,22 @@ export default function TradeTerminal() {
                 </p>
                 <p className="text-xs uppercase text-muted">{market} · Binance</p>
               </div>
-              <div>
+              <div className="min-w-[12ch]">
                 <p
-                  className={`text-2xl ${change >= 0 ? "text-accent" : "text-danger"}`}
+                  className={`text-2xl tabular-nums ${change >= 0 ? "text-accent" : "text-danger"}`}
                   style={{ fontFamily: "var(--font-display)", fontWeight: 700 }}
                 >
-                  {last ? Number(last).toLocaleString() : "—"}
+                  {formatLastPrice(last)}
                 </p>
                 <p
-                  className={`text-xs ${change >= 0 ? "text-accent" : "text-danger"}`}
+                  className={`text-xs tabular-nums ${change >= 0 ? "text-accent" : "text-danger"}`}
                 >
                   {change >= 0 ? "+" : ""}
                   {change.toFixed(2)}%
                 </p>
               </div>
               <span
-                className={`rounded-full border px-3 py-1 text-xs ${
+                className={`inline-flex h-7 w-[7.5rem] shrink-0 items-center justify-center rounded-full border text-xs ${
                   live
                     ? "border-accent/40 text-accent"
                     : "border-border text-muted"
@@ -519,11 +667,18 @@ export default function TradeTerminal() {
             </p>
           ) : null}
 
-          {/* Chart + sticky order ticket */}
+          {/* Chart + sticky order ticket — heights stay aligned */}
           <div className="mt-4 grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <TradingViewChart symbol={symbol} market={market} height={480} />
+            <TradingViewChart
+              symbol={symbol}
+              market={market}
+              height={chartHeight}
+            />
 
-            <section className="border border-border lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto">
+            <section
+              ref={ticketRef}
+              className="border border-border lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto"
+            >
               <div className="border-b border-border px-4 py-3">
                 <p className="eyebrow">Order ticket</p>
                 <p className="mt-1 text-xs text-muted">
@@ -562,8 +717,9 @@ export default function TradeTerminal() {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
+                    disabled={!!openOnSymbol && openOnSymbol.side === "short"}
                     onClick={() => setSide("long")}
-                    className={`rounded-lg py-2.5 text-sm font-medium ${
+                    className={`rounded-lg py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${
                       side === "long"
                         ? "bg-accent text-black"
                         : "border border-border text-muted"
@@ -573,8 +729,9 @@ export default function TradeTerminal() {
                   </button>
                   <button
                     type="button"
+                    disabled={!!openOnSymbol && openOnSymbol.side === "long"}
                     onClick={() => setSide("short")}
-                    className={`rounded-lg py-2.5 text-sm font-medium ${
+                    className={`rounded-lg py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${
                       side === "short"
                         ? "bg-danger text-white"
                         : "border border-border text-muted"
@@ -583,6 +740,13 @@ export default function TradeTerminal() {
                     Sell / Short
                   </button>
                 </div>
+                {openOnSymbol ? (
+                  <p className="text-xs text-accent">
+                    Open {openOnSymbol.side} {openOnSymbol.symbol} (
+                    {money(openOnSymbol.notional)}). Same side adds to this
+                    position; opposite side is blocked.
+                  </p>
+                ) : null}
 
                 {orderType === "limit" ? (
                   <label className="block">
@@ -616,6 +780,11 @@ export default function TradeTerminal() {
                   {market === "spot" ? (
                     <p className="mt-2 text-xs text-muted">
                       Spot is cash · 1x only
+                    </p>
+                  ) : openOnSymbol ? (
+                    <p className="mt-2 text-xs text-muted">
+                      Locked to existing position leverage ({effectiveLeverage}x)
+                      when adding size.
                     </p>
                   ) : (
                     <>
@@ -687,8 +856,8 @@ export default function TradeTerminal() {
                   </label>
                 </div>
                 <p className="text-[11px] text-muted">
-                  Long: SL below entry, TP above. Short: opposite. Checked while
-                  the terminal refreshes.
+                  Long: SL below entry, TP above. Short: opposite. When mark hits
+                  SL/TP (or limit), fill is exact at that price.
                 </p>
                 <div className="space-y-1 text-xs text-muted">
                   <p>
@@ -719,20 +888,21 @@ export default function TradeTerminal() {
                     </span>
                   </p>
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className={`w-full rounded-lg py-3 text-sm font-semibold disabled:opacity-50 ${
+                <PendingButton
+                  pending={busy}
+                  pendingLabel={
+                    openOnSymbol ? "Adding to position…" : "Sending order…"
+                  }
+                  className={`rounded-lg ${
                     side === "long"
                       ? "bg-accent text-black"
                       : "bg-danger text-white"
                   }`}
-                  style={{ fontFamily: "var(--font-display)" }}
                 >
-                  {busy
-                    ? "Sending…"
+                  {openOnSymbol
+                    ? `${orderType === "limit" ? "Limit add" : "Add"} to ${side}`
                     : `${orderType === "limit" ? "Place limit" : "Place market"} ${side}`}
-                </button>
+                </PendingButton>
               </form>
             </section>
           </div>
@@ -761,8 +931,8 @@ export default function TradeTerminal() {
                     <span className="text-right text-muted/70">—</span>
                   </div>
                 ))}
-                <div className="my-2 border-y border-border px-2 py-2 text-center text-sm text-foreground">
-                  {last ? Number(last).toLocaleString() : "—"}
+                <div className="my-2 border-y border-border px-2 py-2 text-center text-sm tabular-nums text-foreground">
+                  {formatLastPrice(last)}
                 </div>
                 {bids.slice(0, 12).map((b, i) => (
                   <div
@@ -906,6 +1076,14 @@ export default function TradeTerminal() {
                 — switch market tab to view / manage them.
               </div>
             ) : null}
+            {error ? (
+              <p
+                className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
+                role="alert"
+              >
+                {error}
+              </p>
+            ) : null}
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px] text-left text-sm">
                 <thead>
@@ -1028,11 +1206,11 @@ export default function TradeTerminal() {
                           </button>
                           <button
                             type="button"
-                            disabled={busy}
+                            disabled={busy || closingId != null}
                             onClick={() => onClose(p.id)}
-                            className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-white/5"
+                            className="rounded-full border border-border px-2.5 py-1 text-xs hover:bg-white/5 disabled:opacity-50"
                           >
-                            Close
+                            {closingId === p.id ? "Closing…" : "Close"}
                           </button>
                         </div>
                       </td>

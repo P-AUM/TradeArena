@@ -1,15 +1,19 @@
+from __future__ import annotations
+
+import logging
 import secrets
+import threading
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage
+from django.db import close_old_connections
 from django.utils import timezone
 
-from .gmail_api import gmail_api_configured, send_via_gmail_api
-from .graph_mail import graph_configured, send_via_graph
 from .models import PasswordResetCode
-from .resend_mail import resend_configured, send_via_resend
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -28,7 +32,7 @@ def create_reset_code(user: User) -> PasswordResetCode:
     )
 
 
-def _smtp_usable() -> bool:
+def smtp_configured() -> bool:
     host = (getattr(settings, "EMAIL_HOST", "") or "").strip()
     password = (getattr(settings, "EMAIL_HOST_PASSWORD", "") or "").strip()
     if not host or not password:
@@ -38,42 +42,61 @@ def _smtp_usable() -> bool:
     return True
 
 
-def send_reset_code_email(user: User, code: str) -> None:
-    subject = "TradeArena password reset code"
-    message = (
-        f"Hi {user.username},\n\n"
-        f"Your TradeArena password reset code is: {code}\n\n"
-        f"This code expires in {CODE_TTL_MINUTES} minutes.\n"
-        f"If you did not request this, you can ignore this email.\n"
-    )
+def send_reset_code_email_async(user: User, code: str) -> None:
+    """Send via SMTP in a thread so the HTTP response is not blocked."""
+    username = user.username
+    email = user.email
 
-    # 1) Gmail API — can send to any recipient once OAuth is set up
-    if gmail_api_configured():
-        send_via_gmail_api(to=user.email, subject=subject, body=message)
-        return
+    def _run() -> None:
+        close_old_connections()
+        try:
+            send_reset_code_email(username, email, code)
+        except Exception:
+            logger.exception("Failed to send password reset email to %s", email)
+        finally:
+            close_old_connections()
 
-    # 2) Resend (free tier: only your Resend signup email unless domain verified)
-    if resend_configured():
-        send_via_resend(to=user.email, subject=subject, body=message)
-        return
+    threading.Thread(target=_run, daemon=True, name="ta-reset-email").start()
 
-    # 3) Microsoft Graph (Outlook / Microsoft 365)
-    if graph_configured():
-        send_via_graph(to=user.email, subject=subject, body=message)
-        return
 
-    # 4) SMTP
-    if _smtp_usable():
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
+def _from_header() -> str:
+    """Use DEFAULT_FROM_EMAIL as the visible From — never EMAIL_HOST_USER.
+
+    EMAIL_HOST_USER is only the SMTP login. Gmail SMTP still rewrites From to
+    the login mailbox unless DEFAULT_FROM_EMAIL is that Gmail address (or a
+    verified Gmail 'Send mail as' alias). Other SMTP hosts (Mailjet, domain
+    mail) show this header when the sender is verified.
+    """
+    raw = (getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip()
+    if not raw:
+        raise RuntimeError("DEFAULT_FROM_EMAIL is not set in backend/.env")
+    if "<" in raw:
+        return raw
+    return f"TradeArena <{raw}>"
+
+
+def send_reset_code_email(username: str, email: str, code: str) -> None:
+    if not smtp_configured():
+        raise RuntimeError(
+            "SMTP is not configured. Set EMAIL_HOST, EMAIL_HOST_USER, "
+            "and EMAIL_HOST_PASSWORD in backend/.env"
         )
-        return
 
-    raise RuntimeError(
-        "No email provider configured. Set Gmail OAuth "
-        "(python manage.py gmail_oauth_setup), or RESEND_API_KEY / Graph / SMTP."
+    from_header = _from_header()
+    msg = EmailMessage(
+        subject="TradeArena password reset code",
+        body=(
+            f"Hi {username},\n\n"
+            f"Your TradeArena password reset code is: {code}\n\n"
+            f"This code expires in {CODE_TTL_MINUTES} minutes.\n"
+            f"If you did not request this, you can ignore this email.\n"
+        ),
+        from_email=from_header,
+        to=[email],
+        headers={
+            "From": from_header,
+            "Reply-To": from_header,
+            "Sender": from_header,
+        },
     )
+    msg.send(fail_silently=False)
