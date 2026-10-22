@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from accounts.models import User
 from accounts import social as social_helpers
 from . import binance as bn
-from .leaderboard import VALID_METRICS, VALID_PERIODS, build_leaderboard
+from .leaderboard import VALID_MARKETS, VALID_PERIODS, build_leaderboard
 from .models import PaperOrder, Position
 from .prices import get_all_quotes
 from .serializers import (
@@ -32,21 +32,23 @@ class IsTrader(permissions.BasePermission):
 
 
 class LeaderboardView(APIView):
-    """Rank traders by PnL, ROI, or win rate for daily / weekly / all-time."""
+    """Spot + Futures boards ranked by ROI, then win rate (paper trades only)."""
 
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
         period = (request.query_params.get("period") or "all_time").strip().lower()
-        metric = (request.query_params.get("metric") or "pnl").strip().lower()
+        market = (request.query_params.get("market") or "").strip().lower() or None
         if period not in VALID_PERIODS:
             return Response(
                 {"detail": f"Invalid period. Use one of: {', '.join(VALID_PERIODS)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if metric not in VALID_METRICS:
+        if market is not None and market not in VALID_MARKETS:
             return Response(
-                {"detail": f"Invalid metric. Use one of: {', '.join(VALID_METRICS)}"},
+                {
+                    "detail": f"Invalid market. Use one of: {', '.join(VALID_MARKETS)}"
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
@@ -54,7 +56,9 @@ class LeaderboardView(APIView):
         except ValueError:
             limit = 100
         limit = max(1, min(limit, 200))
-        return Response(build_leaderboard(period=period, metric=metric, limit=limit))
+        return Response(
+            build_leaderboard(period=period, limit=limit, market=market)
+        )
 
 
 class TraderListView(APIView):

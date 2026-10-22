@@ -133,12 +133,14 @@ def assert_user_can_trade_tournament(user, tournament: Tournament) -> None:
         raise ValueError("You are not a paid entrant in this tournament.")
 
 
-def entry_stats(user, tournament: Tournament) -> dict:
+def entry_stats(user, tournament: Tournament, *, market: str | None = None) -> dict:
     closed = Position.objects.filter(
         user=user,
         tournament=tournament,
         status=Position.Status.CLOSED,
     )
+    if market:
+        closed = closed.filter(market=market)
     n = closed.count()
     wins = closed.filter(realized_pnl__gt=0).count()
     pnl = closed.aggregate(s=Sum("realized_pnl"))["s"] or Decimal("0")
@@ -148,6 +150,62 @@ def entry_stats(user, tournament: Tournament) -> dict:
         "win_rate": win_rate.quantize(Decimal("0.0001")),
         "closed_trades": n,
         "winning_trades": wins,
+    }
+
+
+def tournament_market_board(tournament: Tournament, market: str) -> list[dict]:
+    """
+    Spot or Futures board for one tournament.
+    Rank: ROI % (on that market's tournament starting capital) → win rate
+    → closed trades → realized PnL.
+    """
+    capital = tournament.starting_capital or Decimal("10000.00")
+    if capital <= 0:
+        capital = Decimal("10000.00")
+
+    rows: list[dict] = []
+    for e in tournament.entries.filter(paid=True).select_related("user"):
+        st = entry_stats(e.user, tournament, market=market)
+        if st["closed_trades"] < 1:
+            continue
+        pnl = st["realized_pnl"]
+        win_rate = st["win_rate"]
+        # win_rate stored 0–1; expose % for sorting/display consistency with main LB
+        win_rate_pct = (win_rate * Decimal("100")).quantize(Decimal("0.01"))
+        roi = (pnl / capital * Decimal("100")).quantize(Decimal("0.0001"))
+        rows.append(
+            {
+                "username": e.user.username,
+                "market": market,
+                "realized_pnl": str(pnl),
+                "roi_pct": str(roi),
+                "win_rate": str(win_rate),
+                "win_rate_pct": str(win_rate_pct),
+                "closed_trades": st["closed_trades"],
+                "winning_trades": st["winning_trades"],
+                "starting_capital": str(capital),
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            Decimal(r["roi_pct"]),
+            Decimal(r["win_rate_pct"]),
+            r["closed_trades"],
+            Decimal(r["realized_pnl"]),
+            r["username"],
+        ),
+        reverse=True,
+    )
+    for i, r in enumerate(rows, start=1):
+        r["rank"] = i
+    return rows
+
+
+def tournament_boards(tournament: Tournament) -> dict[str, list[dict]]:
+    return {
+        "spot": tournament_market_board(tournament, "spot"),
+        "futures": tournament_market_board(tournament, "futures"),
     }
 
 

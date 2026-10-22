@@ -7,6 +7,10 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import PendingButton from "@/components/PendingButton";
 import {
+  ClosedTradesTable,
+  OpenPositionsTable,
+} from "@/components/TradeHistoryTables";
+import {
   apiJoinTournament,
   apiTournament,
   apiTournamentMe,
@@ -14,8 +18,8 @@ import {
   apiTournamentTrades,
   type Position,
   type Tournament,
+  type TournamentBoardRow,
   type TournamentMyResponse,
-  type TournamentStanding,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -29,6 +33,13 @@ function money(n: string | number) {
   });
 }
 
+function pct(n: string | number) {
+  const v = typeof n === "string" ? Number(n) : n;
+  if (Number.isNaN(v)) return "—";
+  const digits = Math.abs(v) > 0 && Math.abs(v) < 0.01 ? 4 : 2;
+  return `${v.toFixed(digits)}%`;
+}
+
 function fmtWhen(iso: string) {
   try {
     return new Date(iso).toLocaleString();
@@ -37,43 +48,70 @@ function fmtWhen(iso: string) {
   }
 }
 
-function PositionRows({
+function pnlClass(n: string | number) {
+  const v = typeof n === "string" ? Number(n) : n;
+  if (Number.isNaN(v)) return "";
+  return v >= 0 ? "text-accent" : "text-danger";
+}
+
+function MarketBoardTable({
+  title,
+  subtitle,
   rows,
-  empty,
 }: {
-  rows: Position[];
-  empty: string;
+  title: string;
+  subtitle: string;
+  rows: TournamentBoardRow[];
 }) {
-  if (rows.length === 0) {
-    return <p className="mt-2 text-sm text-muted">{empty}</p>;
-  }
   return (
-    <ul className="mt-3 space-y-2 text-sm">
-      {rows.map((p) => (
-        <li
-          key={p.id}
-          className="flex flex-wrap gap-x-3 border-b border-border/50 py-2 text-muted"
-        >
-          <span className="capitalize text-foreground">{p.side}</span>
-          <span>
-            {p.symbol} ({p.market})
-          </span>
-          <span>{p.leverage}x</span>
-          <span>entry {money(p.entry_price)}</span>
-          {p.status === "open" && p.unrealized_pnl != null ? (
-            <span>uPnL {money(p.unrealized_pnl)}</span>
-          ) : null}
-          {p.status === "closed" && p.realized_pnl != null ? (
-            <span>PnL {money(p.realized_pnl)}</span>
-          ) : null}
-          {p.closed_at ? (
-            <span className="text-xs">{fmtWhen(p.closed_at)}</span>
-          ) : (
-            <span className="text-xs">{fmtWhen(p.opened_at)}</span>
-          )}
-        </li>
-      ))}
-    </ul>
+    <section className="mt-8">
+      <h3 className="text-base font-semibold">{title}</h3>
+      <p className="mt-1 text-sm text-muted">{subtitle}</p>
+      <div className="mt-3 overflow-x-auto border border-border">
+        <table className="w-full min-w-[640px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-border text-muted">
+              <th className="eyebrow px-4 py-3 font-normal">#</th>
+              <th className="eyebrow px-4 py-3 font-normal">Trader</th>
+              <th className="eyebrow px-4 py-3 font-normal text-accent">ROI</th>
+              <th className="eyebrow px-4 py-3 font-normal">Win rate</th>
+              <th className="eyebrow px-4 py-3 font-normal">Closed</th>
+              <th className="eyebrow px-4 py-3 font-normal">PnL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-muted">
+                  No closed trades on this board yet.
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={`${title}-${r.username}`} className="border-b border-border/50">
+                  <td className="px-4 py-3 text-muted">{r.rank}</td>
+                  <td className="px-4 py-3">{r.username}</td>
+                  <td className={`px-4 py-3 font-semibold ${pnlClass(r.roi_pct)}`}>
+                    {pct(r.roi_pct)}
+                  </td>
+                  <td className="px-4 py-3">
+                    {pct(r.win_rate_pct)}
+                    <span className="ml-1.5 text-xs text-muted">
+                      {r.winning_trades}W/
+                      {Math.max(0, r.closed_trades - r.winning_trades)}L
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-muted">{r.closed_trades}</td>
+                  <td className={`px-4 py-3 ${pnlClass(r.realized_pnl)}`}>
+                    {money(r.realized_pnl)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -86,7 +124,10 @@ export default function TournamentDetailPage() {
   const [t, setT] = useState<Tournament | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [standings, setStandings] = useState<TournamentStanding[] | null>(null);
+  const [liveBoards, setLiveBoards] = useState<{
+    spot: TournamentBoardRow[];
+    futures: TournamentBoardRow[];
+  } | null>(null);
   const [trades, setTrades] = useState<(Position & { username: string })[]>([]);
   const [mine, setMine] = useState<TournamentMyResponse | null>(null);
 
@@ -164,7 +205,9 @@ export default function TournamentDetailPage() {
     setError(null);
     try {
       const data = await apiTournamentStandings(id);
-      setStandings(data.standings);
+      setLiveBoards(
+        data.boards ?? { spot: [], futures: [] }
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Standings failed");
     } finally {
@@ -189,7 +232,7 @@ export default function TournamentDetailPage() {
     <>
       <Navbar />
       <main className="relative min-h-screen pt-28 pb-24">
-        <div className="mx-auto max-w-4xl px-6">
+        <div className="mx-auto max-w-5xl px-6">
           <Link
             href="/tournaments"
             className="text-sm text-muted hover:text-foreground"
@@ -199,6 +242,10 @@ export default function TournamentDetailPage() {
           <h1 className="statement mt-4 text-4xl">{t.name}</h1>
           <p className="mt-2 text-sm uppercase tracking-wider text-muted">
             {t.status}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            Organized by{" "}
+            <span className="text-foreground">@{t.organizer}</span>
           </p>
           <p className="thin mt-4 text-muted">
             {fmtWhen(t.start_at)} → {fmtWhen(t.end_at)}
@@ -253,13 +300,29 @@ export default function TournamentDetailPage() {
                 <p className="mt-1 text-sm text-muted">
                   Only you can see this while the tournament is running.
                 </p>
-                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div>
                     <p className="text-xs uppercase tracking-wider text-muted">
                       Realized PnL
                     </p>
-                    <p className="mt-1 text-xl font-semibold">
+                    <p
+                      className={`mt-1 text-xl font-semibold ${pnlClass(
+                        mine.performance.realized_pnl
+                      )}`}
+                    >
                       {money(mine.performance.realized_pnl)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-muted">
+                      Unrealized PnL
+                    </p>
+                    <p
+                      className={`mt-1 text-xl font-semibold ${pnlClass(
+                        mine.performance.unrealized_pnl ?? 0
+                      )}`}
+                    >
+                      {money(mine.performance.unrealized_pnl ?? 0)}
                     </p>
                   </div>
                   <div>
@@ -283,25 +346,46 @@ export default function TournamentDetailPage() {
 
               <section className="mt-10">
                 <h2 className="text-lg font-semibold">Your open positions</h2>
-                <PositionRows
-                  rows={mine.open}
-                  empty="No open tournament positions."
-                />
+                <div className="mt-3 border border-border">
+                  <OpenPositionsTable positions={mine.open} />
+                </div>
               </section>
 
               <section className="mt-10">
                 <h2 className="text-lg font-semibold">Your closed trades</h2>
-                <PositionRows
-                  rows={mine.closed}
-                  empty="No closed tournament trades yet."
-                />
+                <div className="mt-3 border border-border">
+                  <ClosedTradesTable positions={mine.closed} />
+                </div>
               </section>
             </>
           ) : null}
 
+          {t.status === "ended" ? (
+            <section className="mt-10">
+              <h2 className="text-lg font-semibold">Tournament boards</h2>
+              <p className="mt-1 text-sm text-muted">
+                Ranked by ROI on that market&apos;s $10k capital, then win rate,
+                then closed trades / PnL.
+              </p>
+              <MarketBoardTable
+                title="Spot leaders"
+                subtitle="Spot only · no leverage"
+                rows={t.boards?.spot ?? []}
+              />
+              <MarketBoardTable
+                title="Futures leaders"
+                subtitle="Futures only · leveraged book"
+                rows={t.boards?.futures ?? []}
+              />
+            </section>
+          ) : null}
+
           {t.status === "ended" && t.leaderboard?.length ? (
             <section className="mt-10">
-              <h2 className="text-lg font-semibold">Final leaderboard</h2>
+              <h2 className="text-lg font-semibold">Prize payouts</h2>
+              <p className="mt-1 text-sm text-muted">
+                Overall settlement ranking (combined book) for prizes.
+              </p>
               <table className="mt-3 w-full text-left text-sm">
                 <thead className="text-muted">
                   <tr>
@@ -335,33 +419,22 @@ export default function TournamentDetailPage() {
             </section>
           ) : null}
 
-          {standings ? (
+          {liveBoards ? (
             <section className="mt-10">
               <h2 className="text-lg font-semibold">Live standings (admin)</h2>
-              <table className="mt-3 w-full text-left text-sm">
-                <thead className="text-muted">
-                  <tr>
-                    <th className="py-1 pr-3">#</th>
-                    <th className="py-1 pr-3">Trader</th>
-                    <th className="py-1 pr-3">PnL</th>
-                    <th className="py-1 pr-3">Win rate</th>
-                    <th className="py-1">Closed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {standings.map((r) => (
-                    <tr key={r.username} className="border-t border-border">
-                      <td className="py-1.5 pr-3">{r.rank}</td>
-                      <td className="py-1.5 pr-3">{r.username}</td>
-                      <td className="py-1.5 pr-3">{money(r.realized_pnl)}</td>
-                      <td className="py-1.5 pr-3">
-                        {(Number(r.win_rate) * 100).toFixed(1)}%
-                      </td>
-                      <td className="py-1.5">{r.closed_trades}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <p className="mt-1 text-sm text-muted">
+                ROI → win rate → closed / PnL. Spot and Futures separate.
+              </p>
+              <MarketBoardTable
+                title="Spot leaders"
+                subtitle="Live · spot only"
+                rows={liveBoards.spot}
+              />
+              <MarketBoardTable
+                title="Futures leaders"
+                subtitle="Live · futures only"
+                rows={liveBoards.futures}
+              />
             </section>
           ) : null}
 
@@ -370,23 +443,56 @@ export default function TournamentDetailPage() {
               <h2 className="text-lg font-semibold">
                 {t.status === "ended" ? "Public trades" : "Entrant trades (admin)"}
               </h2>
-              <ul className="mt-3 space-y-2 text-sm">
-                {trades.slice(0, 80).map((p) => (
-                  <li
-                    key={p.id}
-                    className="flex flex-wrap gap-x-3 border-b border-border/50 py-2 text-muted"
-                  >
-                    <span className="text-foreground">{p.username}</span>
-                    <span>
-                      {p.side} {p.symbol} ({p.market})
-                    </span>
-                    <span>{p.status}</span>
-                    {p.realized_pnl != null ? (
-                      <span>{money(p.realized_pnl)}</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
+              <div className="mt-3 overflow-x-auto border border-border">
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-muted">
+                      <th className="eyebrow px-4 py-3 font-normal">Trader</th>
+                      <th className="eyebrow px-4 py-3 font-normal">Side</th>
+                      <th className="eyebrow px-4 py-3 font-normal">Symbol</th>
+                      <th className="eyebrow px-4 py-3 font-normal">Market</th>
+                      <th className="eyebrow px-4 py-3 font-normal">Status</th>
+                      <th className="eyebrow px-4 py-3 font-normal">PnL</th>
+                      <th className="eyebrow px-4 py-3 font-normal">Closed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.slice(0, 80).map((p) => (
+                      <tr key={p.id} className="border-b border-border/50">
+                        <td className="px-4 py-3 text-foreground">
+                          {p.username}
+                        </td>
+                        <td className="px-4 py-3 uppercase">{p.side}</td>
+                        <td className="px-4 py-3">{p.symbol}</td>
+                        <td className="px-4 py-3 uppercase text-muted">
+                          {p.market}
+                        </td>
+                        <td className="px-4 py-3 capitalize text-muted">
+                          {p.status}
+                        </td>
+                        <td
+                          className={`px-4 py-3 ${
+                            p.realized_pnl != null
+                              ? pnlClass(p.realized_pnl)
+                              : "text-muted"
+                          }`}
+                        >
+                          {p.realized_pnl != null
+                            ? money(p.realized_pnl)
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted">
+                          {p.closed_at
+                            ? fmtWhen(p.closed_at)
+                            : p.opened_at
+                              ? fmtWhen(p.opened_at)
+                              : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           ) : null}
         </div>

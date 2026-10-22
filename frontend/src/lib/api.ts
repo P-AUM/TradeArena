@@ -640,12 +640,13 @@ export async function apiTraderHistory(
 }
 
 export type LeaderboardPeriod = "daily" | "weekly" | "all_time";
-export type LeaderboardMetric = "pnl" | "roi" | "win_rate";
+export type LeaderboardMarket = "spot" | "futures";
 
 export type LeaderboardEntry = {
   rank: number;
   id: number;
   username: string;
+  market?: LeaderboardMarket;
   realized_pnl: string;
   roi_pct: string;
   win_rate_pct: string;
@@ -658,20 +659,25 @@ export type LeaderboardEntry = {
 
 export type LeaderboardResponse = {
   period: LeaderboardPeriod;
-  metric: LeaderboardMetric;
+  metric: "roi";
+  market: LeaderboardMarket | null;
   period_start: string | null;
   count: number;
   results: LeaderboardEntry[];
+  boards: {
+    spot?: LeaderboardEntry[];
+    futures?: LeaderboardEntry[];
+  };
 };
 
 export async function apiLeaderboard(opts: {
   period?: LeaderboardPeriod;
-  metric?: LeaderboardMetric;
+  market?: LeaderboardMarket;
   limit?: number;
 } = {}): Promise<LeaderboardResponse> {
   const params = new URLSearchParams();
   if (opts.period) params.set("period", opts.period);
-  if (opts.metric) params.set("metric", opts.metric);
+  if (opts.market) params.set("market", opts.market);
   if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString() ? `?${params}` : "";
   const res = await authFetch(`${API_BASE}/trading/leaderboard/${qs}`, {
@@ -700,9 +706,30 @@ export type Tournament = {
   duration_seconds: number;
   i_joined: boolean;
   prize_pool_estimate: string;
+  /** Admin username who created the event. */
+  organizer: string;
   settled_at: string | null;
   created_at: string;
+  /** Overall prize ranking (settlement). */
   leaderboard?: TournamentEntry[];
+  /** Spot / Futures skill boards (ROI → win rate). */
+  boards?: {
+    spot: TournamentBoardRow[];
+    futures: TournamentBoardRow[];
+  };
+};
+
+export type TournamentBoardRow = {
+  rank: number;
+  username: string;
+  market: string;
+  realized_pnl: string;
+  roi_pct: string;
+  win_rate: string;
+  win_rate_pct: string;
+  closed_trades: number;
+  winning_trades: number;
+  starting_capital: string;
 };
 
 export type TournamentEntry = {
@@ -767,6 +794,10 @@ export async function apiTournamentStandings(id: number): Promise<{
   tournament_id: number;
   status: TournamentStatus;
   standings: TournamentStanding[];
+  boards: {
+    spot: TournamentBoardRow[];
+    futures: TournamentBoardRow[];
+  };
 }> {
   const res = await authFetch(`${API_BASE}/tournaments/${id}/standings/`);
   if (!res.ok) throw new Error(await parseError(res));
@@ -795,6 +826,7 @@ export async function apiTournamentTrades(
 
 export type TournamentMyPerformance = {
   realized_pnl: string;
+  unrealized_pnl: string;
   win_rate: string;
   closed_trades: number;
   winning_trades: number;

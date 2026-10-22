@@ -12,6 +12,7 @@ class TournamentSerializer(serializers.ModelSerializer):
     duration_seconds = serializers.SerializerMethodField()
     i_joined = serializers.SerializerMethodField()
     prize_pool_estimate = serializers.SerializerMethodField()
+    organizer = serializers.CharField(source="created_by.username", read_only=True)
 
     class Meta:
         model = Tournament
@@ -29,6 +30,7 @@ class TournamentSerializer(serializers.ModelSerializer):
             "duration_seconds",
             "i_joined",
             "prize_pool_estimate",
+            "organizer",
             "settled_at",
             "created_at",
         )

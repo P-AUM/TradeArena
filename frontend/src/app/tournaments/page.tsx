@@ -13,7 +13,7 @@ import {
   apiTournamentStandings,
   apiTournaments,
   type Tournament,
-  type TournamentStanding,
+  type TournamentBoardRow,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -25,6 +25,12 @@ function money(n: string | number) {
     currency: "USD",
     maximumFractionDigits: 2,
   });
+}
+
+function pct(n: string | number) {
+  const v = typeof n === "string" ? Number(n) : n;
+  if (Number.isNaN(v)) return "—";
+  return `${v.toFixed(2)}%`;
 }
 
 function fmtWhen(iso: string) {
@@ -50,7 +56,8 @@ export default function TournamentsPage() {
   const [busy, setBusy] = useState(false);
   const [standings, setStandings] = useState<{
     id: number;
-    rows: TournamentStanding[];
+    spot: TournamentBoardRow[];
+    futures: TournamentBoardRow[];
   } | null>(null);
 
   const [name, setName] = useState("");
@@ -122,7 +129,11 @@ export default function TournamentsPage() {
     setError(null);
     try {
       const data = await apiTournamentStandings(id);
-      setStandings({ id, rows: data.standings });
+      setStandings({
+        id,
+        spot: data.boards?.spot ?? [],
+        futures: data.boards?.futures ?? [],
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Standings failed");
     } finally {
@@ -265,6 +276,10 @@ export default function TournamentsPage() {
                       <p className={`mt-1 text-xs uppercase tracking-wider ${statusTone(t.status)}`}>
                         {t.status}
                       </p>
+                      <p className="mt-1 text-sm text-muted">
+                        Organized by{" "}
+                        <span className="text-foreground">@{t.organizer}</span>
+                      </p>
                       <p className="mt-2 text-sm text-muted">
                         {fmtWhen(t.start_at)} → {fmtWhen(t.end_at)}
                       </p>
@@ -333,31 +348,69 @@ export default function TournamentsPage() {
                     </div>
                   </div>
                   {standings?.id === t.id ? (
-                    <div className="mt-4 overflow-x-auto border-t border-border pt-3">
-                      <table className="w-full text-left text-sm">
-                        <thead className="text-muted">
-                          <tr>
-                            <th className="py-1 pr-3">#</th>
-                            <th className="py-1 pr-3">Trader</th>
-                            <th className="py-1 pr-3">PnL</th>
-                            <th className="py-1 pr-3">Win rate</th>
-                            <th className="py-1">Closed</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {standings.rows.map((r) => (
-                            <tr key={r.username} className="border-t border-border/60">
-                              <td className="py-1.5 pr-3">{r.rank}</td>
-                              <td className="py-1.5 pr-3">{r.username}</td>
-                              <td className="py-1.5 pr-3">{money(r.realized_pnl)}</td>
-                              <td className="py-1.5 pr-3">
-                                {(Number(r.win_rate) * 100).toFixed(1)}%
-                              </td>
-                              <td className="py-1.5">{r.closed_trades}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="mt-4 space-y-4 border-t border-border pt-3">
+                      {(
+                        [
+                          ["Spot", standings.spot],
+                          ["Futures", standings.futures],
+                        ] as const
+                      ).map(([label, rows]) => (
+                        <div key={label}>
+                          <p className="mb-2 text-xs uppercase tracking-wider text-muted">
+                            {label} · ROI first
+                          </p>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                              <thead className="text-muted">
+                                <tr>
+                                  <th className="py-1 pr-3">#</th>
+                                  <th className="py-1 pr-3">Trader</th>
+                                  <th className="py-1 pr-3">ROI</th>
+                                  <th className="py-1 pr-3">Win rate</th>
+                                  <th className="py-1 pr-3">Closed</th>
+                                  <th className="py-1">PnL</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.length === 0 ? (
+                                  <tr>
+                                    <td
+                                      colSpan={6}
+                                      className="py-2 text-muted"
+                                    >
+                                      No closed trades yet.
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  rows.map((r) => (
+                                    <tr
+                                      key={`${label}-${r.username}`}
+                                      className="border-t border-border/60"
+                                    >
+                                      <td className="py-1.5 pr-3">{r.rank}</td>
+                                      <td className="py-1.5 pr-3">
+                                        {r.username}
+                                      </td>
+                                      <td className="py-1.5 pr-3">
+                                        {pct(r.roi_pct)}
+                                      </td>
+                                      <td className="py-1.5 pr-3">
+                                        {pct(r.win_rate_pct)}
+                                      </td>
+                                      <td className="py-1.5 pr-3">
+                                        {r.closed_trades}
+                                      </td>
+                                      <td className="py-1.5">
+                                        {money(r.realized_pnl)}
+                                      </td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ) : null}
                 </article>

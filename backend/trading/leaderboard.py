@@ -1,4 +1,4 @@
-"""Compute trader rankings by realized PnL, ROI, and win rate."""
+"""Compute Spot / Futures leaderboards ranked by ROI, then win rate."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from .models import Position
 from .services import STARTING_BALANCE
 
 Period = Literal["daily", "weekly", "all_time"]
-Metric = Literal["pnl", "roi", "win_rate"]
+MarketBoard = Literal["spot", "futures"]
 
 VALID_PERIODS = ("daily", "weekly", "all_time")
-VALID_METRICS = ("pnl", "roi", "win_rate")
+VALID_MARKETS = ("spot", "futures")
 
 
 def period_start(period: str) -> datetime | None:
@@ -32,29 +32,35 @@ def period_start(period: str) -> datetime | None:
     return None
 
 
-def _closed_filter(start: datetime | None) -> Q:
-    # Main leaderboard excludes tournament books
-    q = Q(positions__status=Position.Status.CLOSED) & Q(
-        positions__tournament__isnull=True
+def _closed_filter(start: datetime | None, market: str) -> Q:
+    # Paper book only; market-scoped (spot vs futures)
+    q = (
+        Q(positions__status=Position.Status.CLOSED)
+        & Q(positions__tournament__isnull=True)
+        & Q(positions__market=market)
     )
     if start is not None:
         q &= Q(positions__closed_at__gte=start)
     return q
 
 
-def build_leaderboard(
-    *,
-    period: str = "all_time",
-    metric: str = "pnl",
-    limit: int = 100,
-) -> dict:
-    if period not in VALID_PERIODS:
-        period = "all_time"
-    if metric not in VALID_METRICS:
-        metric = "pnl"
+def _open_filter(market: str) -> Q:
+    return (
+        Q(positions__status=Position.Status.OPEN)
+        & Q(positions__tournament__isnull=True)
+        & Q(positions__market=market)
+    )
 
+
+def _board_for_market(
+    *,
+    market: str,
+    period: str,
+    limit: int,
+) -> list[dict]:
     start = period_start(period)
-    closed = _closed_filter(start)
+    closed = _closed_filter(start, market)
+    open_f = _open_filter(market)
 
     traders = (
         User.objects.filter(role=User.Role.TRADER)
@@ -72,24 +78,25 @@ def build_leaderboard(
                 "positions",
                 filter=closed & Q(positions__realized_pnl__lt=0),
             ),
-            open_positions=Count(
-                "positions",
-                filter=Q(positions__status=Position.Status.OPEN)
-                & Q(positions__tournament__isnull=True),
-            ),
+            open_positions=Count("positions", filter=open_f),
         )
         .prefetch_related("wallets")
     )
 
     rows: list[dict] = []
     for u in traders:
-        capital = sum(
-            (w.starting_balance for w in u.wallets.all()),
-            Decimal("0"),
+        if (u.closed_trades or 0) < 1:
+            continue
+
+        wallet = next(
+            (w for w in u.wallets.all() if w.market == market),
+            None,
         )
-        if capital <= 0:
-            # Spot + futures + forex defaults
-            capital = STARTING_BALANCE * Decimal("3")
+        capital = (
+            wallet.starting_balance
+            if wallet is not None and wallet.starting_balance > 0
+            else STARTING_BALANCE
+        )
 
         pnl = u.realized_pnl or Decimal("0")
         decided = (u.wins or 0) + (u.losses or 0)
@@ -108,6 +115,7 @@ def build_leaderboard(
             {
                 "id": u.id,
                 "username": u.username,
+                "market": str(market),
                 "realized_pnl": str(pnl),
                 "roi_pct": str(roi),
                 "win_rate_pct": str(win_rate),
@@ -119,32 +127,62 @@ def build_leaderboard(
             }
         )
 
+    # Rank: ROI → win rate → closed trades → PnL
     def sort_key(row: dict):
-        if metric == "roi":
-            primary = Decimal(row["roi_pct"])
-        elif metric == "win_rate":
-            # Prefer higher win rate; break ties with more decided trades
-            primary = Decimal(row["win_rate_pct"])
-            return (
-                primary,
-                row["wins"] + row["losses"],
-                Decimal(row["realized_pnl"]),
-                row["username"],
-            )
-        else:
-            primary = Decimal(row["realized_pnl"])
-        return (primary, Decimal(row["roi_pct"]), row["closed_trades"], row["username"])
+        return (
+            Decimal(row["roi_pct"]),
+            Decimal(row["win_rate_pct"]),
+            row["closed_trades"],
+            Decimal(row["realized_pnl"]),
+            row["username"],
+        )
 
     rows.sort(key=sort_key, reverse=True)
 
     ranked = []
     for i, row in enumerate(rows[:limit], start=1):
         ranked.append({"rank": i, **row})
+    return ranked
 
+
+def build_leaderboard(
+    *,
+    period: str = "all_time",
+    metric: str = "roi",  # kept for API compat; ranking is always ROI-first
+    limit: int = 100,
+    market: str | None = None,
+) -> dict:
+    if period not in VALID_PERIODS:
+        period = "all_time"
+    start = period_start(period)
+    limit = max(1, min(limit, 200))
+
+    # Single market board (legacy / optional)
+    if market in VALID_MARKETS:
+        results = _board_for_market(market=market, period=period, limit=limit)
+        return {
+            "period": period,
+            "metric": "roi",
+            "market": market,
+            "period_start": start.isoformat() if start else None,
+            "count": len(results),
+            "results": results,
+            "boards": {
+                market: results,
+            },
+        }
+
+    spot = _board_for_market(market="spot", period=period, limit=limit)
+    futures = _board_for_market(market="futures", period=period, limit=limit)
     return {
         "period": period,
-        "metric": metric,
+        "metric": "roi",
+        "market": None,
         "period_start": start.isoformat() if start else None,
-        "count": len(ranked),
-        "results": ranked,
+        "count": len(spot) + len(futures),
+        "results": spot,  # legacy field: spot board
+        "boards": {
+            "spot": spot,
+            "futures": futures,
+        },
     }

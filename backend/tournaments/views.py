@@ -18,6 +18,7 @@ from .services import (
     join_tournament,
     settle_tournament,
     sync_tournament_statuses,
+    tournament_boards,
 )
 
 
@@ -41,7 +42,10 @@ class TournamentListCreateView(APIView):
 
     def get(self, request):
         sync_tournament_statuses()
-        qs = Tournament.objects.exclude(status=Tournament.Status.CANCELLED)
+        qs = (
+            Tournament.objects.exclude(status=Tournament.Status.CANCELLED)
+            .select_related("created_by")
+        )
         return Response(
             TournamentSerializer(qs, many=True, context={"request": request}).data
         )
@@ -64,15 +68,16 @@ class TournamentDetailView(APIView):
     def get(self, request, pk: int):
         sync_tournament_statuses()
         try:
-            t = Tournament.objects.get(pk=pk)
+            t = Tournament.objects.select_related("created_by").get(pk=pk)
         except Tournament.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
         t.refresh_status(save=True)
         data = TournamentSerializer(t, context={"request": request}).data
-        # Public leaderboard only after ended; admin always gets standings via separate endpoint
+        # Public boards + prize table only after ended
         if t.status == Tournament.Status.ENDED:
             entries = t.entries.filter(paid=True).order_by("rank", "id")
             data["leaderboard"] = TournamentEntrySerializer(entries, many=True).data
+            data["boards"] = tournament_boards(t)
         return Response(data)
 
 
@@ -149,6 +154,8 @@ class TournamentMyView(APIView):
         ).exists():
             return Response({"detail": "Not an entrant."}, status=403)
 
+        from decimal import Decimal
+
         try_fill_open_orders(request.user)
         st = entry_stats(request.user, t)
         open_qs = Position.objects.filter(
@@ -162,24 +169,36 @@ class TournamentMyView(APIView):
             status=Position.Status.CLOSED,
         ).order_by("-closed_at", "-opened_at")
 
+        open_data = PositionSerializer(open_qs, many=True).data
+        unrealized = Decimal("0")
+        for row in open_data:
+            raw = row.get("unrealized_pnl")
+            if raw is not None and raw != "":
+                try:
+                    unrealized += Decimal(str(raw))
+                except Exception:
+                    pass
+        unrealized = unrealized.quantize(Decimal("0.01"))
+
         return Response(
             {
                 "tournament_id": t.id,
                 "status": t.status,
                 "performance": {
                     "realized_pnl": str(st["realized_pnl"]),
+                    "unrealized_pnl": str(unrealized),
                     "win_rate": str(st["win_rate"]),
                     "closed_trades": st["closed_trades"],
                     "winning_trades": st["winning_trades"],
                 },
-                "open": PositionSerializer(open_qs, many=True).data,
+                "open": open_data,
                 "closed": PositionSerializer(closed_qs, many=True).data,
             }
         )
 
 
 class TournamentAdminStandingsView(APIView):
-    """Live scoreboard — admin only."""
+    """Live scoreboard — admin only. Spot + Futures boards (ROI → win rate)."""
 
     permission_classes = (IsAdminRole,)
 
@@ -190,10 +209,12 @@ class TournamentAdminStandingsView(APIView):
         except Tournament.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
         t.refresh_status(save=True)
-        rows = []
+        boards = tournament_boards(t)
+        # Legacy flat list = futures then spot combined is awkward; keep overall PnL list
+        overall = []
         for e in t.entries.filter(paid=True).select_related("user"):
             st = entry_stats(e.user, t)
-            rows.append(
+            overall.append(
                 {
                     "username": e.user.username,
                     "realized_pnl": str(st["realized_pnl"]),
@@ -201,17 +222,18 @@ class TournamentAdminStandingsView(APIView):
                     "closed_trades": st["closed_trades"],
                 }
             )
-        rows.sort(
+        overall.sort(
             key=lambda r: (float(r["realized_pnl"]), float(r["win_rate"])),
             reverse=True,
         )
-        for i, r in enumerate(rows, start=1):
+        for i, r in enumerate(overall, start=1):
             r["rank"] = i
         return Response(
             {
                 "tournament_id": t.id,
                 "status": t.status,
-                "standings": rows,
+                "boards": boards,
+                "standings": overall,
             }
         )
 
