@@ -1,3 +1,5 @@
+import logging
+
 from django.db.models import Count, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -6,6 +8,9 @@ from rest_framework.views import APIView
 from accounts.models import User
 from accounts import social as social_helpers
 from . import binance as bn
+from .binance import BinanceUnavailable
+
+logger = logging.getLogger(__name__)
 from .leaderboard import VALID_MARKETS, VALID_PERIODS, build_leaderboard
 from .models import PaperOrder, Position
 from .prices import get_all_quotes
@@ -20,6 +25,25 @@ from .serializers import (
     WalletSerializer,
 )
 from .services import cancel_order, ensure_wallets, try_fill_open_orders
+
+
+def _market_response(load):
+    """Return market data, or a client-safe error if Binance cannot be reached."""
+    try:
+        return Response(load())
+    except BinanceUnavailable as exc:
+        response = Response({"detail": exc.public_message}, status=exc.status_code)
+        if exc.retry_after and exc.retry_after > 0:
+            response["Retry-After"] = str(max(1, int(exc.retry_after)))
+        return response
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Unexpected market-data failure")
+        return Response(
+            {"detail": "Market data is temporarily unavailable."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
 
 
 class IsTrader(permissions.BasePermission):
@@ -215,12 +239,7 @@ class SymbolSearchView(APIView):
             )
         q = request.query_params.get("q", "")
         limit = min(int(request.query_params.get("limit", 40)), 100)
-        try:
-            return Response(bn.list_symbols(market, q, limit))
-        except Exception as exc:
-            return Response(
-                {"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY
-            )
+        return _market_response(lambda: bn.list_symbols(market, q, limit))
 
 
 class OrderBookView(APIView):
@@ -232,10 +251,7 @@ class OrderBookView(APIView):
         limit = min(int(request.query_params.get("limit", 20)), 100)
         if market not in ("spot", "futures"):
             return Response({"detail": "spot or futures only"}, status=400)
-        try:
-            return Response(bn.depth(market, symbol, limit))
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=502)
+        return _market_response(lambda: bn.depth(market, symbol, limit))
 
 
 class RecentTradesView(APIView):
@@ -247,10 +263,7 @@ class RecentTradesView(APIView):
         limit = min(int(request.query_params.get("limit", 40)), 100)
         if market not in ("spot", "futures"):
             return Response({"detail": "spot or futures only"}, status=400)
-        try:
-            return Response(bn.recent_trades(market, symbol, limit))
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=502)
+        return _market_response(lambda: bn.recent_trades(market, symbol, limit))
 
 
 class TickerView(APIView):
@@ -261,10 +274,7 @@ class TickerView(APIView):
         symbol = request.query_params.get("symbol", "BTCUSDT")
         if market not in ("spot", "futures"):
             return Response({"detail": "spot or futures only"}, status=400)
-        try:
-            return Response(bn.ticker_24h(market, symbol))
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=502)
+        return _market_response(lambda: bn.ticker_24h(market, symbol))
 
 
 class OrderListCreateView(APIView):

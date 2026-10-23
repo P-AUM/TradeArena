@@ -169,14 +169,33 @@ class PlaceOrderSerializer(serializers.Serializer):
                     {"symbol": f"Unsupported forex. Use: {', '.join(FOREX_BASE)}"}
                 )
         else:
-            found = bn.list_symbols(market, query=symbol, limit=5)
+            try:
+                found = bn.list_symbols(market, query=symbol, limit=5)
+            except bn.BinanceUnavailable as exc:
+                raise serializers.ValidationError(
+                    {"detail": exc.public_message}
+                ) from exc
             if not any(x["symbol"] == symbol for x in found):
                 try:
                     bn.book_ticker(market, symbol)
+                except bn.BinanceUnavailable as exc:
+                    if exc.status_code == 400:
+                        raise serializers.ValidationError(
+                            {
+                                "symbol": (
+                                    f"Unknown Binance {market} symbol: {symbol}"
+                                )
+                            }
+                        ) from exc
+                    raise serializers.ValidationError(
+                        {"detail": exc.public_message}
+                    ) from exc
                 except Exception as exc:
                     raise serializers.ValidationError(
                         {
-                            "symbol": f"Unknown Binance {market} symbol: {symbol} ({exc})"
+                            "symbol": (
+                                f"Unknown Binance {market} symbol: {symbol}"
+                            )
                         }
                     ) from exc
 
