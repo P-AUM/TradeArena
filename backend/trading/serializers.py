@@ -233,6 +233,8 @@ class PlaceOrderSerializer(serializers.Serializer):
             )
         except ValueError as exc:
             raise serializers.ValidationError({"detail": str(exc)}) from exc
+        except bn.BinanceUnavailable as exc:
+            raise serializers.ValidationError({"detail": exc.public_message}) from exc
 
 
 class UpdateProtectSerializer(serializers.Serializer):
@@ -357,3 +359,5 @@ class AdjustPositionSerializer(serializers.Serializer):
             raise serializers.ValidationError("Not found.") from exc
         except ValueError as exc:
             raise serializers.ValidationError({"detail": str(exc)}) from exc
+        except bn.BinanceUnavailable as exc:
+            raise serializers.ValidationError({"detail": exc.public_message}) from exc

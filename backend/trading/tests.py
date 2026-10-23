@@ -1,5 +1,6 @@
 import threading
 import time
+from decimal import Decimal
 from email.utils import formatdate
 from unittest.mock import patch
 
@@ -316,6 +317,53 @@ class BinanceMarketDataTests(SimpleTestCase):
 
         second = recent_trades("spot", "BTCUSDT", 40)
         self.assertEqual(second["trades"], first["trades"])
+        self.assertFalse(first["stale"])
+        self.assertTrue(second["stale"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_book_ticker_refuses_stale_cache_during_a_ban(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            return httpx.Response(
+                200,
+                json={"symbol": "BTCUSDT", "bidPrice": "10", "askPrice": "12"},
+            )
+
+        self._install(handler)
+        first = book_ticker("spot", "BTCUSDT")
+        self.assertEqual(first["bid"], Decimal("10"))
+        entry = next(iter(binance._cache.values()))
+        entry.fresh_until = 0
+        binance._hosts[binance.SPOT_REST].banned_until = time.monotonic() + 100
+
+        with self.assertRaises(BinanceUnavailable):
+            book_ticker("spot", "BTCUSDT")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_http_418_body_ban_timestamp_is_honored_without_retry(self):
+        until_ms = int((time.time() + 90) * 1000)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            return httpx.Response(
+                418,
+                json={
+                    "code": -1003,
+                    "msg": f"Way too much request weight used; IP banned until {until_ms}.",
+                },
+            )
+
+        self._install(handler)
+        with self.assertRaises(BinanceUnavailable) as raised:
+            recent_trades("spot", "BTCUSDT", 40)
+
+        self.assertGreater(raised.exception.retry_after, 80)
+        self.assertLess(raised.exception.retry_after, 100)
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(len(self.calls), 1)
+
+        with self.assertRaises(BinanceUnavailable):
+            recent_trades("spot", "ETHUSDT", 40)
         self.assertEqual(len(self.calls), 1)
 
     def test_high_used_weight_pauses_further_requests(self):

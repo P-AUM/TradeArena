@@ -2,14 +2,20 @@
 
 REST calls are cached, de-duplicated, and stopped while Binance has banned or
 rate-limited this process. HTTP 418 and 429 are not retried. Timeouts and 5xx
-responses use a short bounded backoff. Live books and trades still update over
-the websocket URLs returned to the client.
+responses use a short bounded backoff. A Retry-After header or an "IP banned
+until <timestamp>" body sets the wait; this client does not switch hosts.
+
+Live trades, tickers, and order-book diffs are delivered by the shared
+websocket hub in market_stream.py. REST depth is only the snapshot that
+Binance requires to start that book. Stale REST cache is never returned for
+execution prices (bookTicker / fill_price).
 """
 
 from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +33,9 @@ SPOT_REST = "https://api.binance.com"
 FUTURES_REST = "https://fapi.binance.com"
 SPOT_WS = "wss://stream.binance.com:9443/ws"
 FUTURES_WS = "wss://fstream.binance.com/ws"
+# Combined-stream bases on the same official hosts. Not alternate REST hosts.
+SPOT_WS_COMBINED = "wss://stream.binance.com:9443/stream"
+FUTURES_WS_COMBINED = "wss://fstream.binance.com/stream"
 
 # Stay well under Binance's 6,000 request-weight per minute IP limit, including
 # when a host runs more than one worker. The upstream used-weight header is a
@@ -123,7 +132,7 @@ def _host_gate(host: str) -> _HostGate:
 
 
 def reset_state_for_tests() -> None:
-    """Drop cached payloads, ban state, and the shared HTTP client."""
+    """Drop cached payloads, ban state, the shared HTTP client, and the WS hub."""
     global _http
     clear_symbol_cache()
     with _lock:
@@ -134,6 +143,11 @@ def reset_state_for_tests() -> None:
         if _http is not None:
             _http.close()
             _http = None
+    try:
+        from . import market_stream
+    except Exception:
+        return
+    market_stream.reset_hub_for_tests()
 
 
 def _cache_key(market: str, path: str, params: dict) -> str:
@@ -284,6 +298,20 @@ def _assumed_ban_seconds(status: int, strikes_after_increment: int) -> float:
     return min(MAX_ASSUMED_BAN, base * (2**exponent))
 
 
+def _ban_seconds_from_body(response: httpx.Response) -> float | None:
+    """Read Binance's 'banned until <epoch ms>' hint when Retry-After is absent."""
+    match = re.search(r"banned until\s+(\d{10,16})", _safe_body(response))
+    if not match:
+        return None
+    raw = int(match.group(1))
+    until = raw / 1000.0 if raw > 10_000_000_000 else float(raw)
+    seconds = until - time.time()
+    if seconds <= 0:
+        return None
+    # Explicit deadline from Binance, capped so a bad parse cannot lock the process.
+    return min(seconds, 24 * 3600.0)
+
+
 def _backoff_delay(attempt: int, retry_after: float | None) -> float:
     exp = min(MAX_BACKOFF, BASE_BACKOFF * (2 ** (attempt - 1)))
     if retry_after is not None and retry_after > 0:
@@ -419,10 +447,18 @@ def _fetch_json(host: str, path: str, params: dict, weight: int) -> Any:
         status = response.status_code
         if status in (418, 429):
             retry_after = _parse_retry_after(response)
+            body_after = _ban_seconds_from_body(response)
+            explicit = [
+                value
+                for value in (retry_after, body_after)
+                if value is not None and value > 0
+            ]
             with _lock:
                 strikes = _host_gate(host).ban_strikes
-            if retry_after is not None and retry_after > 0:
-                ban_for = retry_after
+            if explicit:
+                # Honor the longer explicit deadline so a short header cannot
+                # poke the ban early. Do not invent extra retries.
+                ban_for = max(explicit)
                 counted_strike = False
             else:
                 ban_for = _assumed_ban_seconds(status, strikes + 1)
@@ -433,7 +469,7 @@ def _fetch_json(host: str, path: str, params: dict, weight: int) -> Any:
                 path,
                 params,
                 action=f"not-retrying ban_seconds={ban_for:.3f}",
-                retry_after=retry_after,
+                retry_after=retry_after if retry_after is not None else body_after,
             )
             raise _fail(
                 _public_limit_message(status),
@@ -510,13 +546,23 @@ def _load(
     *,
     ttl: float,
     stale_ttl: float,
-) -> Any:
+    allow_stale: bool = True,
+    use_cache: bool = True,
+) -> tuple[Any, bool]:
+    """Return ``(payload, stale)``.
+
+    ``stale`` is true only when a cached payload is served after Binance
+    refused a fresh fetch. Callers that price orders pass ``allow_stale=False``
+    so a ban raises instead of returning that cache. The fresh window is not
+    extended on a stale serve, or the next execution read would treat it as live.
+    """
     params = dict(params or {})
     host = rest_base(market)
     key = _cache_key(market, path, params)
-    cached = _fresh(key)
-    if cached is not None:
-        return cached
+    if use_cache:
+        cached = _fresh(key)
+        if cached is not None:
+            return cached, False
 
     with _lock:
         flight = _flights.get(key)
@@ -542,13 +588,14 @@ def _load(
                     retry_after=err.retry_after,
                 ) from err
             raise err
-        return flight.result
+        value, stale = flight.result
+        return value, stale
 
     try:
         try:
             data = _fetch_json(host, path, params, _weight(path, params))
         except BinanceUnavailable as exc:
-            stale = _stale(key)
+            stale = _stale(key) if allow_stale else None
             if stale is not None:
                 logger.warning(
                     "binance status=%s endpoint=%s params=%s action=serve-stale",
@@ -556,18 +603,14 @@ def _load(
                     path,
                     params,
                 )
-                now = time.monotonic()
-                with _lock:
-                    entry = _cache.get(key)
-                    if entry is not None:
-                        entry.fresh_until = max(entry.fresh_until, now + min(ttl, 2))
-                flight.result = stale
-                return stale
+                flight.result = (stale, True)
+                return stale, True
             flight.error = exc
             raise
-        _store(key, data, ttl, stale_ttl)
-        flight.result = data
-        return data
+        if ttl > 0 or stale_ttl > 0:
+            _store(key, data, ttl, stale_ttl)
+        flight.result = (data, False)
+        return data, False
     except BinanceUnavailable:
         raise
     except Exception as exc:
@@ -609,7 +652,8 @@ def ws_base(market: str) -> str:
 @lru_cache(maxsize=2)
 def _exchange_info(market: str) -> dict[str, Any]:
     path = "/fapi/v1/exchangeInfo" if market == "futures" else "/api/v3/exchangeInfo"
-    return _load(market, path, {}, ttl=3600, stale_ttl=6 * 3600)
+    data, _stale = _load(market, path, {}, ttl=3600, stale_ttl=6 * 3600)
+    return data
 
 
 def clear_symbol_cache() -> None:
@@ -656,14 +700,16 @@ def list_symbols(market: str, query: str = "", limit: int = 50) -> list[dict]:
 
 
 def book_ticker(market: str, symbol: str) -> dict[str, Decimal]:
+    """Fresh best bid/ask. Refuses the stale cache — not safe for fills or risk."""
     symbol = symbol.upper()
     path = "/fapi/v1/ticker/bookTicker" if market == "futures" else "/api/v3/ticker/bookTicker"
-    data = _load(
+    data, _stale = _load(
         market,
         path,
         {"symbol": symbol},
         ttl=1,
         stale_ttl=20,
+        allow_stale=False,
     )
     try:
         bid = Decimal(str(data["bidPrice"]))
@@ -683,7 +729,7 @@ def depth(market: str, symbol: str, limit: int = 20) -> dict:
     allowed = (5, 10, 20, 50, 100, 500, 1000)
     limit = min(allowed, key=lambda x: abs(x - int(limit or 20)))
     path = "/fapi/v1/depth" if market == "futures" else "/api/v3/depth"
-    data = _load(
+    data, stale = _load(
         market,
         path,
         {"symbol": symbol, "limit": limit},
@@ -696,17 +742,45 @@ def depth(market: str, symbol: str, limit: int = 20) -> dict:
         "bids": [{"price": b[0], "qty": b[1]} for b in data.get("bids", [])],
         "asks": [{"price": a[0], "qty": a[1]} for a in data.get("asks", [])],
         "lastUpdateId": data.get("lastUpdateId") or data.get("E"),
+        "stale": stale,
         "ws": {
             "url": ws_base(market),
-            "stream": f"{symbol.lower()}@depth20@100ms",
+            "stream": f"{symbol.lower()}@depth@100ms",
         },
     }
+
+
+def depth_snapshot(market: str, symbol: str, limit: int = 100) -> dict:
+    """One live depth snapshot for local-book sync.
+
+    Not read from cache: a snapshot taken before the diff stream was buffering
+    cannot be bridged, and retrying it would loop. Stale cache is never returned.
+    """
+    symbol = symbol.upper()
+    allowed = (5, 10, 20, 50, 100, 500, 1000)
+    limit = min(allowed, key=lambda x: abs(x - int(limit or 100)))
+    path = "/fapi/v1/depth" if market == "futures" else "/api/v3/depth"
+    data, _stale = _load(
+        market,
+        path,
+        {"symbol": symbol, "limit": limit},
+        ttl=0,
+        stale_ttl=0,
+        allow_stale=False,
+        use_cache=False,
+    )
+    if not isinstance(data, dict) or data.get("lastUpdateId") is None:
+        raise BinanceUnavailable(
+            "Binance market data is temporarily unavailable.",
+            status_code=502,
+        )
+    return data
 
 
 def recent_trades(market: str, symbol: str, limit: int = 40) -> dict:
     symbol = symbol.upper()
     path = "/fapi/v1/trades" if market == "futures" else "/api/v3/trades"
-    rows = _load(
+    rows, stale = _load(
         market,
         path,
         {"symbol": symbol, "limit": limit},
@@ -733,6 +807,7 @@ def recent_trades(market: str, symbol: str, limit: int = 40) -> dict:
         "market": market,
         "symbol": symbol,
         "trades": list(reversed(trades)),
+        "stale": stale,
         "ws": {
             "url": ws_base(market),
             "stream": f"{symbol.lower()}@trade",
@@ -743,7 +818,7 @@ def recent_trades(market: str, symbol: str, limit: int = 40) -> dict:
 def ticker_24h(market: str, symbol: str) -> dict:
     symbol = symbol.upper()
     path = "/fapi/v1/ticker/24hr" if market == "futures" else "/api/v3/ticker/24hr"
-    d = _load(
+    d, stale = _load(
         market,
         path,
         {"symbol": symbol},
@@ -765,9 +840,10 @@ def ticker_24h(market: str, symbol: str) -> dict:
         "lowPrice": d.get("lowPrice"),
         "volume": d.get("volume"),
         "quoteVolume": d.get("quoteVolume"),
+        "stale": stale,
         "ws": {
             "url": ws_base(market),
-            "stream": f"{symbol.lower()}@bookTicker",
+            "stream": f"{symbol.lower()}@ticker",
         },
     }
 

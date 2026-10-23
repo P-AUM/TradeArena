@@ -298,7 +298,27 @@ export type Ticker = {
   lowPrice: string;
   volume: string;
   quoteVolume: string;
-  ws: { url: string; stream: string };
+  ws?: { url: string; stream: string };
+  stale?: boolean;
+  source?: string;
+};
+
+export type MarketStreamState = {
+  market: string;
+  symbol: string;
+  ws: { connected: boolean; url: string; streams: string[] };
+  ticker: Ticker | null;
+  trades: { trades: RecentTrade[]; stale: boolean; source: string };
+  orderbook: {
+    bids: OrderBookLevel[];
+    asks: OrderBookLevel[];
+    lastUpdateId: number | null;
+    synced: boolean;
+    stale: boolean;
+    source: string;
+  };
+  notice: string | null;
+  retry_after: number | null;
 };
 
 export async function apiWallets(tournamentId?: number | null): Promise<Wallet[]> {
@@ -362,6 +382,25 @@ export async function apiTicker(
     {}
   );
   if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** Shared Binance websocket state. Does not require the depth snapshot to succeed. */
+export async function apiMarket(
+  market: "spot" | "futures",
+  symbol: string
+): Promise<MarketStreamState> {
+  const res = await authFetch(
+    `${API_BASE}/trading/market/?market=${market}&symbol=${encodeURIComponent(symbol)}`
+  );
+  if (!res.ok) {
+    const retry = Number(res.headers.get("Retry-After"));
+    const err = new Error(await parseError(res)) as Error & {
+      retryAfter?: number;
+    };
+    if (Number.isFinite(retry) && retry > 0) err.retryAfter = retry;
+    throw err;
+  }
   return res.json();
 }
 

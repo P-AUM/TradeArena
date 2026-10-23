@@ -5,9 +5,8 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
-from . import binance as bn
 from .models import PaperOrder, Position, Wallet
-from .prices import get_fill_price, get_mark_price
+from .prices import execution_book, get_fill_price, get_mark_price
 
 User = get_user_model()
 
@@ -763,7 +762,7 @@ def place_order(
 
         assert limit_price is not None
         if market in ("spot", "futures"):
-            book = bn.book_ticker(market, symbol)
+            book = execution_book(market, symbol)
             ask, bid = book["ask"], book["bid"]
         else:
             mid = get_mark_price(market, symbol)

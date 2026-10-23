@@ -242,6 +242,41 @@ class SymbolSearchView(APIView):
         return _market_response(lambda: bn.list_symbols(market, q, limit))
 
 
+class MarketView(APIView):
+    """Live trades, ticker, and synced book from the shared Binance websocket.
+
+    A failed depth snapshot does not hide trades or ticker. Cached book levels
+    are returned only with ``stale: true``.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        market = (request.query_params.get("market") or "spot").strip().lower()
+        raw_symbol = (request.query_params.get("symbol") or "BTCUSDT").upper()
+        symbol = "".join(ch for ch in raw_symbol if ch.isalnum())
+        if market not in ("spot", "futures"):
+            return Response({"detail": "spot or futures only"}, status=400)
+        if not symbol or len(symbol) > 32:
+            return Response({"detail": "Invalid symbol."}, status=400)
+        from .market_stream import get_hub
+
+        try:
+            payload = get_hub().market_payload(market, symbol)
+        except BinanceUnavailable as exc:
+            response = Response(
+                {"detail": exc.public_message}, status=exc.status_code
+            )
+            if exc.retry_after and exc.retry_after > 0:
+                response["Retry-After"] = str(max(1, int(exc.retry_after)))
+            return response
+        response = Response(payload)
+        retry_after = payload.get("retry_after")
+        if retry_after and retry_after > 0:
+            response["Retry-After"] = str(max(1, int(retry_after)))
+        return response
+
+
 class OrderBookView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 

@@ -29,14 +29,12 @@ import {
   apiAdjustPosition,
   apiCancelOrder,
   apiClosePosition,
-  apiOrderBook,
+  apiMarket,
   apiOrders,
   apiPlaceOrder,
   apiPositions,
   apiProtectPosition,
-  apiRecentTrades,
   apiSearchSymbols,
-  apiTicker,
   apiWallets,
   type MarketType,
   type OrderBookLevel,
@@ -81,8 +79,15 @@ function pnlMoney(n: string | number) {
   });
 }
 
-function liveMarkFor(p: Position, viewSymbol: string, liveLast: string | undefined) {
-  if (p.symbol === viewSymbol && isValidPrice(liveLast)) return Number(liveLast);
+function liveMarkFor(
+  p: Position,
+  viewSymbol: string,
+  liveLast: string | undefined,
+  liveFresh: boolean
+) {
+  if (liveFresh && p.symbol === viewSymbol && isValidPrice(liveLast)) {
+    return Number(liveLast);
+  }
   if (isValidPrice(p.mark_price)) return Number(p.mark_price);
   return null;
 }
@@ -105,15 +110,6 @@ function formatLastPrice(raw: string | undefined | null): string {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
-}
-
-function wsPayload(msg: Record<string, unknown>): Record<string, unknown> {
-  // Combined streams: { stream, data: { ... } }
-  const data = msg.data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return data as Record<string, unknown>;
-  }
-  return msg;
 }
 
 function liveUpnl(p: Position, mark: number | null) {
@@ -169,6 +165,11 @@ export default function TradeTerminal() {
   const [busy, setBusy] = useState(false);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [live, setLive] = useState(false);
+  const [tickerStale, setTickerStale] = useState(false);
+  const [bookSynced, setBookSynced] = useState(false);
+  const [bookStale, setBookStale] = useState(false);
+  const [tradesStale, setTradesStale] = useState(false);
+  const [marketNote, setMarketNote] = useState<string | null>(null);
   const [adjustId, setAdjustId] = useState<number | null>(null);
   const [adjustAction, setAdjustAction] = useState<"add" | "trim" | "protect">(
     "add"
@@ -177,9 +178,10 @@ export default function TradeTerminal() {
   const [editSl, setEditSl] = useState("");
   const [editTp, setEditTp] = useState("");
 
-  const depthWs = useRef<WebSocket | null>(null);
-  const tradeWs = useRef<WebSocket | null>(null);
   const ticketRef = useRef<HTMLElement | null>(null);
+  const limitPriceRef = useRef(limitPrice);
+  limitPriceRef.current = limitPrice;
+  const lastTradeIdRef = useRef<number | null>(null);
   const positionsRef = useRef<Position[]>([]);
   const protectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastProtectCheckRef = useRef(0);
@@ -244,13 +246,20 @@ export default function TradeTerminal() {
   }, [notional, effectiveLeverage]);
 
   const estLiqPrice = useMemo(() => {
-    if (effectiveLeverage <= 1) return null;
+    if (tickerStale || effectiveLeverage <= 1) return null;
     const entry =
       orderType === "limit" ? Number(limitPrice) : Number(ticker?.lastPrice);
     if (!entry || Number.isNaN(entry)) return null;
     const frac = 1 / effectiveLeverage;
     return side === "long" ? entry * (1 - frac) : entry * (1 + frac);
-  }, [effectiveLeverage, orderType, limitPrice, ticker?.lastPrice, side]);
+  }, [
+    effectiveLeverage,
+    orderType,
+    limitPrice,
+    ticker?.lastPrice,
+    tickerStale,
+    side,
+  ]);
 
   useEffect(() => {
     if (market === "spot") setLeverage(1);
@@ -294,116 +303,134 @@ export default function TradeTerminal() {
     }, minGap - (now - lastProtectCheckRef.current));
   }, [refreshAccount]);
 
-  const loadMarketData = useCallback(async () => {
-    setError(null);
-    try {
-      const [book, t, tr] = await Promise.all([
-        apiOrderBook(market, symbol),
-        apiTicker(market, symbol),
-        apiRecentTrades(market, symbol),
-      ]);
-      setBids(book.bids);
-      setAsks([...book.asks].reverse());
-      setTicker(t);
-      setTrades(tr.trades);
-      if (!limitPrice && t.lastPrice) {
-        setLimitPrice(String(Number(t.lastPrice)));
-      }
-
-      depthWs.current?.close();
-      tradeWs.current?.close();
-      setLive(false);
-
-      const depthUrl = `${book.ws.url}/${book.ws.stream}`;
-      const tUrl = `${tr.ws.url}/${tr.ws.stream}`;
-
-      const dws = new WebSocket(depthUrl);
-      depthWs.current = dws;
-      dws.onopen = () => setLive(true);
-      dws.onmessage = (ev) => {
-        try {
-          const msg = wsPayload(JSON.parse(ev.data));
-          const b = (msg.bids || msg.b) as string[][] | undefined;
-          const a = (msg.asks || msg.a) as string[][] | undefined;
-          if (b?.length) {
-            const next = b
-              .slice(0, 20)
-              .filter((x) => isValidPrice(x?.[0]))
-              .map((x) => ({ price: String(x[0]), qty: String(x[1] ?? "0") }));
-            if (next.length) setBids(next);
-          }
-          if (a?.length) {
-            const next = [...a.slice(0, 20)]
-              .reverse()
-              .filter((x) => isValidPrice(x?.[0]))
-              .map((x) => ({ price: String(x[0]), qty: String(x[1] ?? "0") }));
-            if (next.length) setAsks(next);
-          }
-        } catch {
-          /* ignore */
-        }
-      };
-
-      const tws = new WebSocket(tUrl);
-      tradeWs.current = tws;
-      tws.onmessage = (ev) => {
-        try {
-          const msg = wsPayload(JSON.parse(ev.data));
-          const price = msg.p;
-          if (!isValidPrice(price)) return;
-
-          const px = Number(price);
-          const row: RecentTrade = {
-            id: Number(msg.t ?? msg.a ?? Date.now()),
-            price: String(price),
-            qty: String(msg.q ?? "0"),
-            time: Number(msg.T ?? Date.now()),
-            isBuyerMaker: Boolean(msg.m),
-          };
-          setTrades((prev) => [row, ...prev].slice(0, 40));
-          setTicker((prev) =>
-            prev ? { ...prev, lastPrice: String(price) } : prev
-          );
-
-          // If live trade price crosses SL/TP on this symbol, check immediately
-          for (const p of positionsRef.current) {
-            if (p.market !== market || p.symbol !== symbol) continue;
-            const sl = p.stop_loss != null ? Number(p.stop_loss) : null;
-            const tp = p.take_profit != null ? Number(p.take_profit) : null;
-            if (sl == null && tp == null) continue;
-            let hit = false;
-            if (p.side === "long") {
-              if (sl != null && px <= sl) hit = true;
-              if (tp != null && px >= tp) hit = true;
-            } else {
-              if (sl != null && px >= sl) hit = true;
-              if (tp != null && px <= tp) hit = true;
-            }
-            if (hit) {
-              scheduleProtectCheck();
-              break;
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-      };
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Market data failed");
-    }
-  }, [market, symbol, scheduleProtectCheck]);
-
   useEffect(() => {
     if (user?.role === "trader") {
       refreshAccount();
-      loadMarketData();
     }
     return () => {
-      depthWs.current?.close();
-      tradeWs.current?.close();
       if (protectTimerRef.current) clearTimeout(protectTimerRef.current);
     };
-  }, [user, refreshAccount, loadMarketData]);
+  }, [user, refreshAccount]);
+
+  // The hub owns the Binance socket. This poll only reads that state, so a
+  // failed snapshot or an account request cannot stop trades and ticker.
+  useEffect(() => {
+    if (user?.role !== "trader") return;
+    let cancelled = false;
+    let timer = 0;
+    lastTradeIdRef.current = null;
+    setBids([]);
+    setAsks([]);
+    setTrades([]);
+    setTicker(null);
+    setTickerStale(false);
+    setBookSynced(false);
+    setBookStale(false);
+    setTradesStale(false);
+    setLive(false);
+    setMarketNote(null);
+
+    const watchStops = (price: string) => {
+      if (!isValidPrice(price)) return;
+      const px = Number(price);
+      for (const p of positionsRef.current) {
+        if (p.market !== market || p.symbol !== symbol) continue;
+        const sl = p.stop_loss != null ? Number(p.stop_loss) : null;
+        const tp = p.take_profit != null ? Number(p.take_profit) : null;
+        if (sl == null && tp == null) continue;
+        let hit = false;
+        if (p.side === "long") {
+          if (sl != null && px <= sl) hit = true;
+          if (tp != null && px >= tp) hit = true;
+        } else {
+          if (sl != null && px >= sl) hit = true;
+          if (tp != null && px <= tp) hit = true;
+        }
+        if (hit) {
+          scheduleProtectCheck();
+          break;
+        }
+      }
+    };
+
+    const poll = async () => {
+      try {
+        const state = await apiMarket(market, symbol);
+        if (cancelled) return;
+        const streamUp = Boolean(state.ws?.connected);
+        setLive(streamUp);
+        if (state.ticker && isValidPrice(state.ticker.lastPrice)) {
+          setTicker({
+            ...state.ticker,
+            market: state.market,
+            symbol: state.symbol,
+          });
+          setTickerStale(Boolean(state.ticker.stale) || !streamUp);
+          if (
+            !state.ticker.stale &&
+            streamUp &&
+            !limitPriceRef.current
+          ) {
+            setLimitPrice(String(Number(state.ticker.lastPrice)));
+          }
+        }
+        const rows = state.trades?.trades ?? [];
+        setTrades(rows);
+        setTradesStale(Boolean(state.trades?.stale) || !streamUp);
+        const book = state.orderbook;
+        if (book?.synced && !book.stale) {
+          setBids(book.bids ?? []);
+          setAsks(book.asks ?? []);
+          setBookSynced(true);
+          setBookStale(false);
+        } else if (book?.stale && (book.bids?.length || book.asks?.length)) {
+          setBids(book.bids ?? []);
+          setAsks(book.asks ?? []);
+          setBookSynced(false);
+          setBookStale(true);
+        } else {
+          setBids([]);
+          setAsks([]);
+          setBookSynced(false);
+          setBookStale(false);
+        }
+        setMarketNote(state.notice);
+        const newest = rows[0];
+        if (
+          streamUp &&
+          !state.trades?.stale &&
+          newest &&
+          newest.id !== lastTradeIdRef.current
+        ) {
+          lastTradeIdRef.current = newest.id;
+          watchStops(newest.price);
+        }
+        timer = window.setTimeout(() => void poll(), 500);
+      } catch (err) {
+        if (cancelled) return;
+        // Keep the last live book, trades, and ticker on screen.
+        setLive(false);
+        setMarketNote(
+          err instanceof Error ? err.message : "Market data unavailable"
+        );
+        const retryAfter =
+          err && typeof err === "object" && "retryAfter" in err
+            ? Number((err as { retryAfter?: number }).retryAfter)
+            : 0;
+        const delay =
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, 15_000)
+            : 2_000;
+        timer = window.setTimeout(() => void poll(), delay);
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [user, market, symbol, scheduleProtectCheck]);
 
   // Fast poll when positions/orders need watching; slow when idle
   useEffect(() => {
@@ -641,6 +668,11 @@ export default function TradeTerminal() {
                   style={{ fontFamily: "var(--font-display)", fontWeight: 700 }}
                 >
                   {formatLastPrice(last)}
+                  {tickerStale && isValidPrice(last) ? (
+                    <span className="ml-2 align-middle text-xs uppercase tracking-wider text-danger">
+                      Stale
+                    </span>
+                  ) : null}
                 </p>
                 <p
                   className={`text-xs tabular-nums ${change >= 0 ? "text-accent" : "text-danger"}`}
@@ -661,6 +693,11 @@ export default function TradeTerminal() {
             </div>
           </div>
 
+          {marketNote ? (
+            <p className="mt-3 text-sm text-muted" role="status">
+              {marketNote}
+            </p>
+          ) : null}
           {error ? (
             <p className="mt-3 text-sm text-danger" role="alert">
               {error}
@@ -878,6 +915,8 @@ export default function TradeTerminal() {
                         })}
                       </span>
                     </p>
+                  ) : effectiveLeverage > 1 ? (
+                    <p>Est. liquidation needs a live price.</p>
                   ) : (
                     <p>No forced liquidation at 1x (spot / cash).</p>
                   )}
@@ -911,7 +950,10 @@ export default function TradeTerminal() {
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <section className="border border-border">
               <div className="border-b border-border px-4 py-3">
-                <p className="eyebrow">Order book</p>
+                <p className="eyebrow">
+                  Order book
+                  {bookStale ? " · stale" : bookSynced ? "" : " · syncing"}
+                </p>
               </div>
               <div className="grid grid-cols-3 px-4 py-2 text-[10px] uppercase tracking-wider text-muted">
                 <span>Price</span>
@@ -919,7 +961,14 @@ export default function TradeTerminal() {
                 <span className="text-right">Sum</span>
               </div>
               <div className="max-h-[280px] overflow-auto px-2">
-                {asks.slice(0, 12).map((a, i) => (
+                {bids.length === 0 && asks.length === 0 ? (
+                  <p className="px-2 py-6 text-sm text-muted">
+                    {bookStale
+                      ? "Stale order book is unavailable."
+                      : "Syncing order book…"}
+                  </p>
+                ) : null}
+                {[...asks.slice(0, 12)].reverse().map((a, i) => (
                   <div
                     key={`a-${i}`}
                     className="grid grid-cols-3 px-2 py-0.5 font-mono text-xs text-danger"
@@ -951,7 +1000,9 @@ export default function TradeTerminal() {
 
             <section className="border border-border">
               <div className="border-b border-border px-4 py-3">
-                <p className="eyebrow">Trades · tick</p>
+                <p className="eyebrow">
+                  Trades · tick{tradesStale ? " · stale" : ""}
+                </p>
               </div>
               <div className="grid grid-cols-3 px-4 py-2 text-[10px] uppercase tracking-wider text-muted">
                 <span>Price</span>
@@ -1105,7 +1156,7 @@ export default function TradeTerminal() {
                 </thead>
                 <tbody>
                   {marketPositions.map((p) => {
-                    const mark = liveMarkFor(p, symbol, last);
+                    const mark = liveMarkFor(p, symbol, last, !tickerStale);
                     const upnl = liveUpnl(p, mark);
                     const pct = liveUpnlPct(p, upnl);
                     return (

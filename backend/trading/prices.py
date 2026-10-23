@@ -14,10 +14,28 @@ FOREX_BASE: dict[str, Decimal] = {
 }
 
 
+def execution_book(market: str, symbol: str) -> dict[str, Decimal]:
+    """Fresh bid/ask for fills and risk. Never a stale REST cache."""
+    symbol = symbol.upper().replace("-", "").replace("/", "")
+    from .market_stream import get_hub
+
+    hub = get_hub()
+    quote = hub.fresh_quote(market, symbol)
+    if quote is None:
+        hub.ensure(market, symbol)
+        quote = hub.fresh_quote(market, symbol)
+    if quote is not None:
+        return quote
+    return bn.book_ticker(market, symbol)
+
+
 def get_fill_price(market: str, symbol: str, side: str) -> Decimal:
     symbol = symbol.upper().replace("-", "").replace("/", "")
     if market in ("spot", "futures"):
-        return bn.fill_price(market, symbol, side)
+        book = execution_book(market, symbol)
+        if side in ("long", "buy"):
+            return book["ask"]
+        return book["bid"]
     # forex mock
     base = FOREX_BASE.get(symbol)
     if base is None:
@@ -35,8 +53,7 @@ def get_fill_price(market: str, symbol: str, side: str) -> Decimal:
 def get_mark_price(market: str, symbol: str) -> Decimal:
     symbol = symbol.upper().replace("-", "").replace("/", "")
     if market in ("spot", "futures"):
-        book = bn.book_ticker(market, symbol)
-        return book["mid"]
+        return execution_book(market, symbol)["mid"]
     return get_fill_price(market, symbol, "long")
 
 

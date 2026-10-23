@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     LeaderboardView,
+    MarketView,
     OrderBookView,
     OrderCancelView,
     OrderListCreateView,
@@ -22,6 +23,7 @@ urlpatterns = [
     path("wallets/", WalletListView.as_view()),
     path("quotes/", QuotesView.as_view()),
     path("symbols/", SymbolSearchView.as_view()),
+    path("market/", MarketView.as_view()),
     path("orderbook/", OrderBookView.as_view()),
     path("trades/", RecentTradesView.as_view()),
     path("ticker/", TickerView.as_view()),
