@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Props = {
   symbol: string;
@@ -19,9 +19,14 @@ function tvSymbol(symbol: string, market: "spot" | "futures") {
 export default function TradingViewChart({
   symbol,
   market,
-  height = 480,
+  height = 560,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    setArmed(false);
+  }, [symbol, market]);
 
   useEffect(() => {
     const root = containerRef.current;
@@ -39,7 +44,6 @@ export default function TradingViewChart({
     script.src = ADVANCED_CHART_SCRIPT;
     script.type = "text/javascript";
     script.async = true;
-    // Explicit height — autosize collapses inside our layout
     script.innerHTML = JSON.stringify({
       width: "100%",
       height,
@@ -71,18 +75,43 @@ export default function TradingViewChart({
   }, [symbol, market, height]);
 
   return (
-    <div className="overflow-hidden border border-border bg-[#0a0a0a]">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <p className="eyebrow">Chart · TradingView</p>
+    <section
+      aria-label="Price chart"
+      className="min-w-0 self-start overflow-visible border border-border bg-[#0a0a0a] lg:min-w-[480px]"
+    >
+      <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+        <p className="eyebrow">Price chart</p>
         <p className="text-[10px] uppercase tracking-wider text-muted">
-          {tvSymbol(symbol, market)} · 15m · drawings on
+          {tvSymbol(symbol, market)} · 15m
         </p>
       </div>
       <div
-        className="tradingview-widget-container relative w-full overflow-hidden"
+        className="tv-chart-host relative w-full"
         style={{ height, width: "100%" }}
-        ref={containerRef}
-      />
-    </div>
+        onMouseLeave={() => setArmed(false)}
+      >
+        <div
+          className="tradingview-widget-container h-full w-full"
+          style={{ height, width: "100%" }}
+          ref={containerRef}
+        />
+        {!armed ? (
+          <button
+            type="button"
+            aria-label="Enable chart zoom and pan"
+            className="absolute bottom-0 right-0 top-11 left-14 z-10 cursor-pointer bg-transparent"
+            onClick={() => setArmed(true)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setArmed(false)}
+            className="absolute right-2 top-12 z-10 rounded-full border border-border bg-black/70 px-3 py-1 text-[11px] text-foreground backdrop-blur-sm"
+          >
+            Done
+          </button>
+        )}
+      </div>
+    </section>
   );
 }

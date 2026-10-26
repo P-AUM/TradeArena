@@ -21,7 +21,7 @@ export default function HowItWorks() {
     <section id="how-it-works" className="border-t border-border">
       <div className="mx-auto max-w-7xl px-6 py-24 md:py-32">
         <p className="eyebrow">How it works</p>
-        <h2 className="statement mt-5 max-w-3xl text-5xl uppercase sm:text-6xl md:text-7xl">
+        <h2 className="statement mt-5 max-w-3xl break-words text-4xl uppercase sm:text-6xl md:text-7xl">
           Three moves.
           <br />
           One arena.

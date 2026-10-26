@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Bricolage_Grotesque, Sora, Syne } from "next/font/google";
 import "./globals.css";
 import Providers from "@/components/Providers";
@@ -35,6 +35,15 @@ export const metadata: Metadata = {
   },
 };
 
+/** Never lock scale — testers must be able to pinch-zoom and pan. */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -45,7 +54,7 @@ export default function RootLayout({
       lang="en"
       className={`${syne.variable} ${sora.variable} ${bricolage.variable} antialiased`}
     >
-      <body className="min-h-screen flex flex-col bg-background text-foreground">
+      <body className="flex min-h-dvh min-w-0 flex-col bg-background text-foreground">
         <Providers>{children}</Providers>
       </body>
     </html>

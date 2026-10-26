@@ -98,9 +98,9 @@ export default function Navbar() {
   }, [user?.id, user?.role, user?.username, router]);
 
   return (
-    <header className="fixed top-0 inset-x-0 z-50">
-      <div className="mx-auto max-w-7xl px-6">
-        <nav className="mt-4 flex items-center justify-between rounded-full border border-border bg-white/[0.03] px-5 py-2.5 backdrop-blur-md">
+    <header className="site-header fixed top-0 inset-x-0 z-50 w-full">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
+        <nav className="mt-4 flex min-w-0 items-center justify-between gap-2 rounded-full border border-border bg-white/[0.03] px-3 py-2.5 backdrop-blur-md sm:px-5">
           <Link href={user ? "/dashboard" : "/"} className="flex items-center">
             <Logo />
           </Link>

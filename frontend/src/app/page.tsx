@@ -12,13 +12,15 @@ export default function Home() {
 
       <main className="flex-1">
         {/* -------- Hero: brand + headline + line + CTAs + full-bleed atmosphere -------- */}
-        <section className="relative min-h-[100svh] overflow-hidden">
-          <div className="hero-atmosphere absolute inset-0" />
-          <div className="grain absolute inset-0" />
+        <section className="relative min-h-dvh">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+            <div className="hero-atmosphere absolute inset-0" />
+            <div className="grain absolute inset-0" />
+          </div>
 
           {/* Dominant visual plane — monolith shadow field (kept lower so copy breathes) */}
           <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-[42%] opacity-90"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-[42%] overflow-hidden opacity-90"
             aria-hidden="true"
           >
             <div className="absolute left-1/2 bottom-[8%] h-[36vmin] w-[28vmin] -translate-x-1/2 bg-[#0e100f]"
@@ -37,7 +39,7 @@ export default function Home() {
             />
           </div>
 
-          <div className="relative mx-auto flex min-h-[100svh] max-w-5xl flex-col items-center justify-center px-6 pb-36 pt-36 text-center md:pb-44 md:pt-40">
+          <div className="relative mx-auto flex min-h-dvh max-w-5xl flex-col items-center justify-center px-6 pb-36 pt-36 text-center md:pb-44 md:pt-40">
             <p
               className="statement text-2xl uppercase tracking-tight text-foreground sm:text-3xl"
               style={{ letterSpacing: "-0.02em" }}
@@ -45,7 +47,7 @@ export default function Home() {
               TradeArena
             </p>
 
-            <h1 className="statement mt-8 text-6xl uppercase leading-[1.05] sm:text-7xl md:mt-10 md:text-8xl md:leading-[1.06]">
+            <h1 className="statement mt-8 max-w-full break-words text-5xl uppercase leading-[1.08] sm:text-7xl md:mt-10 md:text-8xl md:leading-[1.06]">
               Trade in
               <br />
               public.

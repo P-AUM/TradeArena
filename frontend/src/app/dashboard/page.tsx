@@ -20,8 +20,11 @@ export default function DashboardPage() {
   return (
     <>
       <Navbar />
-      <main className="relative flex-1 overflow-hidden">
-        <div className="hero-atmosphere absolute inset-0" />
+      <main className="relative min-w-0 flex-1">
+        <div
+          className="hero-atmosphere pointer-events-none absolute inset-0 overflow-hidden"
+          aria-hidden
+        />
         <div className="relative">
           {loading || !user ? (
             <div className="mx-auto max-w-7xl px-6 pt-40 pb-24">

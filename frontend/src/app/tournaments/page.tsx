@@ -166,8 +166,11 @@ export default function TournamentsPage() {
   return (
     <>
       <Navbar />
-      <main className="relative min-h-screen overflow-hidden pt-28 pb-24">
-        <div className="hero-atmosphere absolute inset-0 opacity-60" />
+      <main className="relative min-h-dvh min-w-0 pt-28 pb-24">
+        <div
+          className="hero-atmosphere pointer-events-none absolute inset-0 overflow-hidden opacity-60"
+          aria-hidden
+        />
         <div className="relative mx-auto max-w-5xl px-6">
           <p className="eyebrow">Competition</p>
           <h1 className="statement mt-3 text-4xl sm:text-5xl">Tournaments</h1>

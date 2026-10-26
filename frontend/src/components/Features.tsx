@@ -22,7 +22,7 @@ export default function Features() {
     <section id="features" className="border-t border-border">
       <div className="mx-auto max-w-7xl px-6 py-28 md:py-40">
         <p className="eyebrow">Features</p>
-        <h2 className="statement mt-8 max-w-4xl text-5xl uppercase leading-[1.08] sm:text-6xl md:mt-10 md:text-7xl md:leading-[1.1]">
+        <h2 className="statement mt-8 max-w-4xl break-words text-4xl uppercase leading-[1.1] sm:text-6xl md:mt-10 md:text-7xl md:leading-[1.1]">
           Built for
           <br />
           <span className="accent-text">spectators</span>

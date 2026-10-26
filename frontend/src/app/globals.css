@@ -29,7 +29,13 @@
 }
 
 html {
-  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  min-width: 0;
 }
 
 body {
@@ -37,6 +43,38 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+body > * {
+  min-width: 0;
+}
+
+.site-header {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* iOS zooms the page when focused inputs are under 16px — then pinch-out feels broken. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+#how-it-works,
+#features {
+  scroll-margin-top: 6rem;
+}
+
+.overflow-x-auto {
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tv-chart-host iframe {
+  display: block;
+  width: 100% !important;
 }
 
 /* Display — bold architectural statements */

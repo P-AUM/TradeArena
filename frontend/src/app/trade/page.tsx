@@ -9,7 +9,7 @@ const TradeTerminal = dynamic(() => import("@/components/TradeTerminal"), {
   loading: () => (
     <>
       <Navbar />
-      <main className="min-h-screen bg-background pt-24 px-4">
+      <main className="min-h-dvh min-w-0 bg-background pt-24 px-4">
         <div className="mx-auto max-w-[1600px] animate-pulse space-y-4">
           <div className="h-10 w-full max-w-xl rounded-full bg-white/5" />
           <div className="grid gap-4 lg:grid-cols-[1fr_320px]">

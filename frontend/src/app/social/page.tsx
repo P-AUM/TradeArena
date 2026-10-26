@@ -128,7 +128,7 @@ function SocialContent() {
         : "No followers yet.";
 
   return (
-    <main className="min-h-screen bg-background pt-28 pb-20">
+    <main className="min-h-dvh min-w-0 bg-background pt-28 pb-20">
       <div className="mx-auto max-w-3xl px-6">
         <p className="eyebrow">Social</p>
         <h1 className="statement mt-4 text-5xl uppercase md:text-6xl">

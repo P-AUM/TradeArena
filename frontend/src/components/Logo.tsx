@@ -7,7 +7,7 @@ export default function Logo({ wordmark = "TradeArena" }: { wordmark?: string })
       >
         <span className="h-2.5 w-2.5 rotate-45 bg-accent" />
       </span>
-      <span className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight">
+      <span className="font-[family-name:var(--font-display)] text-base font-bold tracking-tight sm:text-lg">
         {wordmark}
       </span>
     </span>

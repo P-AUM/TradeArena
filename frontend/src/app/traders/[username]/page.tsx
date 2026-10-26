@@ -110,7 +110,7 @@ export default function TraderHistoryPage() {
   return (
     <>
       <Navbar />
-      <main className="min-h-screen bg-background pt-28 pb-20">
+      <main className="min-h-dvh min-w-0 bg-background pt-28 pb-20">
         <div className="mx-auto max-w-6xl px-6">
           {loading && !data ? (
             <p className="text-muted">Loading history…</p>

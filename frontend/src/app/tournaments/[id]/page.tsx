@@ -231,7 +231,7 @@ export default function TournamentDetailPage() {
   return (
     <>
       <Navbar />
-      <main className="relative min-h-screen pt-28 pb-24">
+      <main className="relative min-h-dvh min-w-0 pt-28 pb-24">
         <div className="mx-auto max-w-5xl px-6">
           <Link
             href="/tournaments"

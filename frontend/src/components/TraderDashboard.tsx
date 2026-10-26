@@ -80,7 +80,7 @@ export default function TraderDashboard({ user }: { user: AuthUser }) {
   return (
     <div className="mx-auto max-w-7xl px-6 pt-32 pb-20">
       <p className="eyebrow">Trader desk</p>
-      <h1 className="statement mt-4 text-5xl uppercase sm:text-6xl md:text-7xl">
+      <h1 className="statement mt-4 max-w-full break-words text-4xl uppercase sm:text-6xl md:text-7xl">
         Your
         <br />
         arena.

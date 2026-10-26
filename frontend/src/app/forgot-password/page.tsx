@@ -99,8 +99,11 @@ export default function ForgotPasswordPage() {
     <>
       <Navbar />
       <main className="flex-1">
-        <section className="relative overflow-hidden">
-          <div className="hero-atmosphere absolute inset-0" />
+        <section className="relative">
+          <div
+            className="hero-atmosphere pointer-events-none absolute inset-0 overflow-hidden"
+            aria-hidden
+          />
           <div className="relative mx-auto max-w-md px-6 pt-40 pb-24">
             <p className="eyebrow">Account</p>
             <h1 className="statement mt-5 text-5xl uppercase sm:text-6xl">
